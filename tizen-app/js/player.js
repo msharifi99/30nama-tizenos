@@ -294,9 +294,14 @@
   P.showOsd = function () {
     $('osd').classList.remove('off'); $('player').classList.add('osd-on'); $('scrub').classList.add('act'); clearTimeout(P.osdTimer);
     P.osdTimer = setTimeout(function () {
-      if (!P.paused && !P.menuOpen && !epsOpen) { $('osd').classList.add('off'); $('player').classList.remove('osd-on'); $('scrub').classList.remove('act'); }
+      if (!P.paused && !P.menuOpen && !epsOpen) P.hideOsd();
     }, 4000);
   };
+  P.hideOsd = function () {
+    clearTimeout(P.osdTimer);
+    $('osd').classList.add('off'); $('player').classList.remove('osd-on'); $('scrub').classList.remove('act');
+  };
+  P.osdVisible = function () { return !$('osd').classList.contains('off'); };
   P.glyph = function (kind) { // kind: 'play' | 'pause' | false
     var g = $('pglyph'); clearTimeout(glyphT);
     g.classList.remove('pulse', 'hold');
@@ -410,7 +415,11 @@
       if (k === K.BACK || k === K.ESC || k === K.BACKSPACE || k === K.DOWN) { P.closeEps(); return true; }
       return false;
     }
-    if (k === K.BACK || k === K.ESC || k === K.BACKSPACE || k === K.STOP) { P.close(); return true; }
+    if (k === K.BACK || k === K.ESC || k === K.BACKSPACE) {
+      if (P.osdVisible()) { P.hideOsd(); return true; } // first Back only dismisses the bar
+      P.close(); return true;
+    }
+    if (k === K.STOP) { P.close(); return true; }
     P.showOsd();
     if (unState && $('upnext').classList.contains('show')) {
       if (k === K.ENTER) {
