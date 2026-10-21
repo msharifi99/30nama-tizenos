@@ -23,7 +23,7 @@ N.config = {
   useProxy: (location.hostname === 'localhost' || location.hostname === '127.0.0.1') && location.pathname.indexOf('/module/') !== 0 && location.port !== '8081'
 };
 N.keys = {
-  ENTER: 13, BACK: 10009, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ESC: 27, BACKSPACE: 8,
+  ENTER: 13, BACK: 10009, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ESC: 27, BACKSPACE: 8, TAB: 9,
   PLAYPAUSE: 10252, PLAY: 415, PAUSE: 19, STOP: 413, FF: 417, RW: 412, IME_DONE: 65376, IME_CANCEL: 65385
 };
 N.store = {

@@ -199,7 +199,8 @@
     track._total = x - gap; track._s = null;
   };
   ui.slideTo = function (track, x) {
-    var s = Math.max(0, x - START), max = Math.max(0, (track._total || 0) - 1824);
+    // Reserve 28px for focus enlargement and its ring at the far safe edge.
+    var s = Math.max(0, x - START), max = Math.max(0, (track._total || 0) - 1796);
     if (s > max) s = max;
     if (track._s === s) return; track._s = s;
     track.style.transform = 'translateX(' + (N.isRtl() ? s : -s) + 'px)';
@@ -214,4 +215,25 @@
   };
   // is `dir` ('left'|'right') towards the end edge in the current direction?
   ui.step = function (dir) { var r = N.isRtl(); return (dir === 'right') !== r ? 1 : -1; };
+
+  // Index-based grids remain predictable while their parent is animating.
+  // Spatial rectangles alone can skip rows or jump back to a distant control.
+  ui.gridNav = function (cards, index, cols, dir, edge) {
+    var next = index;
+    if (dir === 'left' || dir === 'right') {
+      var step = ui.step(dir);
+      if ((step < 0 && index % cols === 0) ||
+          (step > 0 && (index % cols === cols - 1 || index === cards.length - 1))) {
+        return edge ? edge(dir) : true;
+      }
+      next += step;
+    } else if (dir === 'up') {
+      if (index < cols) return edge ? edge(dir) : true;
+      next -= cols;
+    } else if (dir === 'down') {
+      if (Math.floor(index / cols) === Math.floor((cards.length - 1) / cols)) return true;
+      next = Math.min(cards.length - 1, index + cols);
+    }
+    return cards[next] || true;
+  };
 })();

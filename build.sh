@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
-# Usage: ./build.sh <security-profile> [target]   (target = sdb device, e.g. <tv-ip>:26101)
-# Builds tizen-app, packages a signed .wgt into dist/, and installs+runs it if a target is given.
+# Build and sign locally. Installation happens ONLY when an explicit target is given.
+# Usage: ./build.sh <security-profile> [<tv-ip>:26101 | sdb-target-name]
 set -euo pipefail
-PROFILE="${1:?usage: build.sh <profile> [target]}"; TARGET="${2:-}"
+PROFILE="${1:?usage: build.sh <security-profile> [<tv-ip>:26101 | sdb-target-name]}"
+TARGET="${2:-}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TH="${TIZEN_HOME:-/c/tizen-studio}"
-tizen() { "$TH/tools/ide/bin/tizen.bat" "$@" </dev/null; }
-rm -rf "$ROOT/build/web" "$ROOT/build/out"; mkdir -p "$ROOT/build" "$ROOT/dist"
-cp -r "$ROOT/tizen-app" "$ROOT/build/web"; rm -rf "$ROOT/build/web/tools"
-if [[ ! -f "$ROOT/tizen-app/js/tmdb-token.js" ]]; then
-  echo "Note: tizen-app/js/tmdb-token.js not found -> TMDB features disabled (see tmdb-token.example.js)"
-  echo "/* TMDB disabled */" > "$ROOT/build/web/js/tmdb-token.js"
+TH="${TIZEN_HOME:-$HOME/tizen-studio}"
+if [[ -z "${TIZEN_HOME:-}" && -d /c/tizen-studio ]]; then TH=/c/tizen-studio; fi
+CLI="${TIZEN_CLI:-$TH/tools/ide/bin/tizen}"
+if [[ -f "$CLI.bat" ]]; then CLI="$CLI.bat"; fi
+if [[ ! -f "$CLI" ]]; then
+  echo 'Tizen CLI missing. Install Tizen Studio + TV Extension + Samsung Certificate Extension.' >&2
+  echo 'Set TIZEN_HOME or TIZEN_CLI to the installed SDK.' >&2
+  exit 1
 fi
-tizen build-web -out "$(cygpath -w "$ROOT/build/out")" -- "$(cygpath -w "$ROOT/build/web")"
-tizen package -t wgt -s "$PROFILE" -o "$(cygpath -w "$ROOT/dist")" -- "$(cygpath -w "$ROOT/build/out")"
-WGT=$(ls -t "$ROOT"/dist/*.wgt | head -1); echo "Built $WGT"
+sdkpath() { if [[ "$CLI" == *.bat ]]; then cygpath -w "$1"; else printf '%s\n' "$1"; fi; }
+rm -rf "$ROOT/build/web" "$ROOT/build/out"
+mkdir -p "$ROOT/build" "$ROOT/dist"
+cp -R "$ROOT/tizen-app" "$ROOT/build/web"
+rm -rf "$ROOT/build/web/tools"
+if [[ ! -f "$ROOT/build/web/js/tmdb-token.js" ]]; then
+  printf '%s\n' '/* Optional TMDB integration is disabled. */' > "$ROOT/build/web/js/tmdb-token.js"
+fi
+"$CLI" build-web -out "$(sdkpath "$ROOT/build/out")" -- "$(sdkpath "$ROOT/build/web")" </dev/null
+"$CLI" package -t wgt -s "$PROFILE" -o "$(sdkpath "$ROOT/dist")" -- "$(sdkpath "$ROOT/build/out")" </dev/null
+WGT=$(ls -t "$ROOT"/dist/*.wgt | head -1)
+echo "Signed package: $WGT"
 if [[ -n "$TARGET" ]]; then
-  "$TH/tools/sdb.exe" connect "${TARGET%%:*}" || true
-  TNAME=$("$TH/tools/sdb.exe" devices | awk -v t="$TARGET" '$1==t{print $3}'); TARGET="${TNAME:-$TARGET}"
-  tizen install -n "$(basename "$WGT")" -t "$TARGET" -- "$(cygpath -w "$ROOT/dist")"
-  tizen run -p Nama30TvAp.Nama30TV -t "$TARGET"
+  SDB="$TH/tools/sdb"; if [[ -f "$SDB.exe" ]]; then SDB="$SDB.exe"; fi
+  "$SDB" connect "${TARGET%%:*}" || true
+  TNAME=$("$SDB" devices | awk -v t="$TARGET" '$1==t{print $3}'); TARGET="${TNAME:-$TARGET}"
+  "$CLI" install -n "$(basename "$WGT")" -t "$TARGET" -- "$(sdkpath "$ROOT/dist")" </dev/null
+  "$CLI" run -p Nama30TvAp.Nama30TV -t "$TARGET" </dev/null
 fi

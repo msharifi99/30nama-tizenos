@@ -204,7 +204,7 @@
       ui.layoutTrack(tr, r.cs, r.ws);
       return r;
     }
-    function pushRow(r) { defs.push(r.d); rowEls.push(r.row); tracks.push(r.tr); cards.push(r.cs); mem.push(0); rowsEl.appendChild(r.row); rowObjs.push(r); }
+    function pushRow(r) { rowEls.push(r.row); tracks.push(r.tr); cards.push(r.cs); mem.push(0); rowsEl.appendChild(r.row); rowObjs.push(r); }
     function recalcTops() { tops.length = 0; for (var k = 0; k < rowEls.length; k++) tops.push(rowEls[k].offsetTop); if (noteEl) tops.push(noteEl.offsetTop); }
     // insert a TMDB row at index `at`, keeping the current view stable
     function insertRowAt(r, at) {
@@ -335,7 +335,7 @@
     function setRow(ri) {
       var ty = 640 - tops[ri];
       if (rowsTy !== ty) { rowsTy = ty; rowsEl.style.transform = 'translateY(' + ty + 'px)'; }
-      if (st.row !== ri || !rowEls[ri].classList.contains('cur')) {
+      if (st.row !== ri || !rowEls[ri] || !rowEls[ri].classList.contains('cur')) {
         for (var k = 0; k < rowEls.length; k++) { rowEls[k].classList.toggle('past', k < ri); rowEls[k].classList.toggle('cur', k === ri); }
         st.row = ri; windowRows(ri);
       }
@@ -738,8 +738,10 @@
     root.appendChild(hid);
 
     var res = el('div', 'results'), rh = el('div', 'rh'), rw = el('div', 'rgrid-w'), rg = el('div', 'rgrid');
-    rw.appendChild(rg); res.appendChild(rh); res.appendChild(rw); root.appendChild(res);
-    rw.reveal = function (e) { ui.vscroll(rw, e._cell || e, 300); };
+    var viewport = el('div', 'rgrid-viewport'), resultCards = [], keyboardMem = null;
+    var RESULT_COLS = 5; // Must match .rgrid width / (.rgrid .gcell width + margin) in app.css.
+    rw.appendChild(rg); viewport.appendChild(rw); res.appendChild(rh); res.appendChild(viewport); root.appendChild(res);
+    rw.reveal = function (e) { ui.vscroll(rw, e._cell || e, 20); };
 
     function key(label, cls, fn2) {
       var k = el('button', 'key f fl' + (cls ? ' ' + cls : ''));
@@ -748,8 +750,17 @@
     }
     function layout() {
       grid.innerHTML = ''; fn.innerHTML = ''; kb.className = 'kb ' + kbLang;
-      var L = KB[kbLang]; grid.style.width = (L.cols * 72) + 'px'; grid.dir = kbLang === 'fa' ? 'rtl' : 'ltr';
+      var L = KB[kbLang]; grid.style.width = (L.cols * 76) + 'px'; grid.dir = kbLang === 'fa' ? 'rtl' : 'ltr';
       L.keys.forEach(function (c) { grid.appendChild(key(c, '', function () { type(c); })); });
+      Array.prototype.forEach.call(grid.children, function (k, i) {
+        k.onnav = function (dir) {
+          // Keyboard order follows its own language, independently of the UI language.
+          var mapped = dir;
+          if ((kbLang === 'fa') !== N.isRtl() && (dir === 'left' || dir === 'right')) mapped = dir === 'left' ? 'right' : 'left';
+          if (dir === 'down' && Math.floor(i / L.cols) === Math.floor((L.keys.length - 1) / L.cols)) return fn.firstChild;
+          return ui.gridNav(Array.prototype.slice.call(grid.children), i, L.cols, mapped, function () { return panelEdge(dir, k); });
+        };
+      });
       var sp = key(N.t('space'), 'sp', function () { type(' '); });
       fn.appendChild(sp);
       fn.appendChild(key('⌫', '', function () { q = q.slice(0, -1); changed(); }));
@@ -758,10 +769,29 @@
       fn.appendChild(lk);
       var mic = key(ui.icon('mic'), '', function () { hid.value = q; N.nav.focus(hid); });
       fn.appendChild(mic);
-      fn.style.width = (L.cols * 72) + 'px';
+      Array.prototype.forEach.call(fn.children, function (k, i) {
+        k.onnav = function (dir) {
+          if (dir === 'up') return grid.children[Math.max(0, L.keys.length - L.cols + i)];
+          if (dir === 'down') return true;
+          return fn.children[i + (dir === 'right' ? 1 : -1)] || panelEdge(dir, k);
+        };
+      });
+      fn.style.width = (L.cols * 76) + 'px';
     }
+    function panelEdge(dir, cur) {
+      if (dir === 'left' || dir === 'right') {
+        if (ui.step(dir) > 0) { keyboardMem = cur; return resultCards[0] || true; }
+        N.rail.enter();
+      }
+      return true;
+    }
+    panel.onnav = function (dir, cur) {
+      if (dir === 'down') return true;
+      return panelEdge(dir, cur);
+    };
     function type(c) { if (q.length < 60) { q += c; changed(); } }
     function changed() {
+      seq++; clearTimeout(swT); rg.classList.remove('sw');
       qt.textContent = q; ph.style.display = q ? 'none' : '';
       clearTimeout(timer); timer = setTimeout(run, 500);
     }
@@ -770,7 +800,7 @@
     // physical keyboard (desktop testing / USB keyboards)
     function onKeyDown(e) {
       if (document.activeElement === hid || e.ctrlKey || e.altKey || e.metaKey || !e.key || e.key.length !== 1) return;
-      if (N.player.open || document.querySelector('.modal')) return;
+      if (N.player.open || N.rail.open || document.querySelector('.modal')) return;
       type(e.key.toLowerCase());
     }
     document.addEventListener('keydown', onKeyDown);
@@ -778,11 +808,22 @@
     function show(posts, header, msg) {
       clearTimeout(swT); rg.classList.add('sw');
       swT = setTimeout(function () {
-        if (dead) return; rg.innerHTML = ''; rh.textContent = header;
+        if (dead) return;
+        var restoreIndex = resultCards.indexOf(N.nav.cur);
+        rg.innerHTML = ''; resultCards = []; rh.textContent = header;
         if (msg) { var m = el('div', 'nores', msg); m.style.flexBasis = '100%'; m.style.position = 'relative'; m.style.top = '0'; m.style.marginBottom = '24px'; rg.appendChild(m); }
         posts.forEach(function (p, i) {
           var cell = ui.cell(p); if (i < 12) { cell.classList.add('fadein'); cell.style.animationDelay = (i * 15) + 'ms'; }
           cell.card.onclick = function () { N.go('details', { id: p.id }); };
+          resultCards.push(cell.card);
+          cell.card.onnav = function (dir) {
+            return ui.gridNav(resultCards, i, RESULT_COLS, dir, function (edge) {
+              if (edge === 'left' || edge === 'right') {
+                if (ui.step(edge) < 0) return keyboardMem && root.contains(keyboardMem) ? keyboardMem : grid.firstChild;
+              }
+              return true;
+            });
+          };
           cell.card.onfocus2 = function () {
             var lo = Math.max(0, i - 4), hi = Math.min(rg.children.length, i + 12);
             for (var k = lo; k < hi; k++) { var cc = rg.children[k].card; if (cc) ui.load(cc); }
@@ -792,19 +833,21 @@
         for (var k = 0; k < rg.children.length && k < 12; k++) if (rg.children[k].card) ui.load(rg.children[k].card);
         rw.style.transition = 'none'; rw._ty = null; rw.style.transform = ''; void rw.offsetWidth; rw.style.transition = '';
         rg.classList.remove('sw');
+        if (restoreIndex >= 0) N.nav.focus(resultCards[Math.min(restoreIndex, resultCards.length - 1)] || grid.firstChild);
       }, 120);
     }
-    function popular(msg) {
-      N.getHome().then(function (h) { if (dead) return; var ps = (h.suggested && h.suggested.posts) || (h.movies && h.movies.posts) || []; show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
+    function popular(msg, generation) {
+      var my = generation === undefined ? seq : generation;
+      N.getHome().then(function (h) { if (dead || my !== seq) return; var ps = (h.suggested && h.suggested.posts) || (h.movies && h.movies.posts) || []; show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
     }
     function run() {
       var qq = q.trim(); var my = ++seq;
-      if (!qq) { popular(''); return; }
+      if (!qq) { popular('', my); return; }
       N.api.get('search', { query: qq, streamonly: 0, page: 1 }).then(function (r) {
         if (dead || my !== seq) return;
-        if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”'); return; }
+        if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”', my); return; }
         show(r.posts, N.t('topResults'), '');
-      }).catch(function (e) { if (!dead && my === seq) popular(N.t('error') + '. ' + N.t('tryAgain')); });
+      }).catch(function (e) { if (!dead && my === seq) popular(N.t('error') + '. ' + N.t('tryAgain'), my); });
     }
     layout(); popular('');
     N.nav.focus(grid.firstChild, true);
@@ -859,7 +902,7 @@
     function addSkels(n) { for (var i = 0; i < n; i++) { var c = el('div', 'gcell'); c.appendChild(ui.skelCard('grid')); skels.push(c); grid.appendChild(c); } }
     function clearSkels() { skels.forEach(function (s) { if (s.parentNode) s.parentNode.removeChild(s); }); skels = []; }
     function reset() {
-      gen++; page = 1; pages = 1; cells = []; grid.innerHTML = ''; skels = []; box.style.transition = 'none'; box._ty = null; box.style.transform = ''; void box.offsetWidth; box.style.transition = ''; box.classList.remove('scrolled');
+      gen++; loading = false; page = 1; pages = 1; cells = []; grid.innerHTML = ''; skels = []; box.style.transition = 'none'; box._ty = null; box.style.transform = ''; void box.offsetWidth; box.style.transition = ''; box.classList.remove('scrolled');
       wantIdx = 0; restoring = false; load();
     }
     function load() {
@@ -872,10 +915,17 @@
         (r.posts || []).forEach(function (p) {
           var cell = ui.cell(p), idx = cells.length, c = cell.card;
           c.onclick = function () { N.go('details', { id: p.id }); };
+          c.onnav = function (dir) {
+            return ui.gridNav(cells.map(function (it) { return it.card; }), idx, COLS, dir, function (edge) {
+              if (edge === 'up') return sorts.firstChild;
+              if ((edge === 'left' || edge === 'right') && ui.step(edge) < 0) N.rail.enter();
+              return true;
+            });
+          };
           c.onfocus2 = function () {
             var row = Math.floor(idx / COLS), rows = Math.ceil(cells.length / COLS);
             for (var k = Math.max(0, (row - 1) * COLS); k < Math.min(cells.length, (row + 3) * COLS); k++) ui.load(cells[k].card);
-            if (row >= rows - 2 && page < pages) { page++; load(); }
+            if (row >= rows - 2 && page < pages && !loading) { page++; load(); }
           };
           cells.push(cell); grid.appendChild(cell);
         });
@@ -886,10 +936,10 @@
         for (var k = 0; k < Math.min(cells.length, 3 * COLS); k++) ui.load(cells[k].card);
         if (first && !restoring) N.nav.focus(cells[0] ? cells[0].card : sorts.firstChild, true);
         if (restoring) {
-          if (wantIdx < cells.length) { restoring = false; instant(root, function () { N.nav.focus(cells[wantIdx].card, true); }); }
+          if (wantIdx < cells.length) { restoring = false; instant(root, function () { N.nav.focus(cells[wantIdx].card); }); }
           else if (page < pages) { page++; load(); } else { restoring = false; N.nav.focus(cells[0] ? cells[0].card : sorts.firstChild, true); }
         }
-      }).catch(function (e) { loading = false; if (!dead && my === gen) { clearSkels(); if (!cells.length) errorView(root, e, function () { o.retry(); }); } });
+      }).catch(function (e) { if (!dead && my === gen) { loading = false; clearSkels(); if (!cells.length) errorView(root, e, function () { o.retry(); }); } });
     }
     load();
     return {

@@ -26,5 +26,8 @@ tools-video/*.log
 media/*.mp4
 design/shots/
 
+# Local UI regression screenshots
+test-results/
+
 # local tooling
 .claude/

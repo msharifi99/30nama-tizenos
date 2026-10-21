@@ -45,11 +45,11 @@ Playback uses the TV's HTML5 player here (AVPlay is not available inside TizenBr
 
 First turn on Developer Mode on the TV: open Apps, type `12345`, switch Developer mode on, enter your PC's IP address, then reboot the TV.
 
-Requires [Tizen Studio](https://developer.tizen.org/development/tizen-studio/download) (CLI tools + TV extension), a Samsung certificate that includes your TV's DUID, and Git Bash (the scripts target Windows + Git Bash; `TIZEN_HOME` defaults to `/c/tizen-studio`).
+Requires [Tizen Studio](https://developer.tizen.org/development/tizen-studio/download) (CLI tools + TV extension), a Samsung certificate that includes your TV's DUID, and Bash. `build.sh` supports Unix SDK paths and Windows Git Bash; set `TIZEN_HOME` or `TIZEN_CLI` if needed. The guided install wizard requires Windows Git Bash.
 
 ```
 ./install-wizard.sh                              # guided: reads the DUID, creates certificate and profile
-./build.sh <security-profile> [<tv-ip>:26101]    # manual build; with a target it also installs and launches
+./build.sh <security-profile> [<tv-ip>:26101 | sdb-target-name] # manual build; with a target it also installs and launches
 ```
 
 ## Optional: TMDB setup
@@ -92,3 +92,11 @@ install-wizard.sh  guided TV setup
 ## License
 
 Released under the [MIT License](LICENSE). The Vazirmatn font in `tizen-app/fonts/` is licensed under the SIL Open Font License (see `tizen-app/fonts/OFL.txt`).
+
+## Compatibility
+
+| Samsung TV | Tizen | Chromium | Validation |
+|---|---|---|---|
+| 2022 | 6.5 | 85 | English/Persian UI regression checks; installed and launched on a physical TV |
+
+Browser versions: [Samsung web-engine specifications](https://developer.samsung.com/smarttv/develop/specifications/web-engine-specifications.html).

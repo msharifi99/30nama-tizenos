@@ -13,7 +13,18 @@
     } catch (e) {}
   };
 
-  function visible(el) { return el.offsetWidth > 0 && el.offsetHeight > 0; }
+  function visible(el) {
+    if (!el || !document.body.contains(el) || !el.offsetWidth || !el.offsetHeight) return false;
+    // visibility:hidden keeps dimensions (episodes, player, and closing sheets).
+    var style = window.getComputedStyle(el);
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+    var p = el;
+    while (p && p !== document.body) {
+      if (p.classList && p.classList.contains('leave')) return false;
+      p = p.parentNode;
+    }
+    return true;
+  }
   function root() { return nav.scopes.length ? nav.scopes[nav.scopes.length - 1] : document.body; }
   nav.pushScope = function (el) { nav.scopes.push(el); };
   nav.popScope = function () { nav.scopes.pop(); };
@@ -28,7 +39,7 @@
   };
 
   nav.focus = function (el, noScroll) {
-    if (!el) return;
+    if (!visible(el) || el.disabled) return;
     if (nav.cur && nav.cur !== el) { nav.cur.classList.remove('focus'); }
     nav.cur = el; el.classList.add('focus');
     if (el.tagName === 'INPUT') { try { el.focus(); } catch (e) {} }
@@ -40,7 +51,7 @@
   };
   nav.focusFirst = function (container) {
     var c = (container || root()).querySelectorAll('.f'), i;
-    for (i = 0; i < c.length; i++) if (visible(c[i])) { nav.focus(c[i]); return c[i]; }
+    for (i = 0; i < c.length; i++) if (visible(c[i]) && !c[i].disabled) { nav.focus(c[i]); return c[i]; }
     return null;
   };
   nav.clear = function () { if (nav.cur) nav.cur.classList.remove('focus'); nav.cur = null; };
@@ -83,7 +94,7 @@
       if (s < bs) { bs = s; best = el; }
     }
     if (best) nav.focus(best);
-    else if (nav.onEdge) nav.onEdge(dir, cur);
+    else if (!nav.scopes.length && nav.onEdge) nav.onEdge(dir, cur);
     return !!best;
   };
 
@@ -131,9 +142,10 @@
     else if (k === K.ENTER) {
       e.preventDefault();
       // never activate a stale (detached/hidden) element: refocus a live one instead
-      if (nav.cur && (!document.body.contains(nav.cur) || !visible(nav.cur))) { nav.cur = null; nav.focusFirst(); return; }
+      if (nav.cur && (!root().contains(nav.cur) || !visible(nav.cur) || nav.cur.disabled)) { nav.clear(); nav.focusFirst(); return; }
       if (nav.cur) { if (nav.cur.onenter) nav.cur.onenter(); else nav.cur.click(); }
     }
+    else if (k === K.TAB) { e.preventDefault(); } // native Tab must not scroll the fixed TV canvas
   });
   // mouse support for desktop testing (only on real pointer movement, so content sliding under a still cursor never steals focus)
   document.addEventListener('mousemove', function (e) {
