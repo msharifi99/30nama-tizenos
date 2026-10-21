@@ -40,8 +40,15 @@
     L.onload = null;
     L.src = info.src;
     var tm = setTimeout(function () { if (!finished && my === token) { finished = true; if (done) done(false); } }, 2500);
-    var go = function () { clearTimeout(tm); show(); };
-    if (L.decode) L.decode().then(go, go); else L.onload = go;
+    // decode off the visible layer first so the crossfade never waits on a main-thread decode; a failed image keeps the old backdrop
+    var go = function (ok) {
+      clearTimeout(tm); if (finished || my !== token) return;
+      if (ok === false && !(L.complete && L.naturalWidth)) { finished = true; L.removeAttribute('src'); if (done) done(false); return; }
+      if (N.ui) N.ui.mark(info.src); // remember it as loaded
+      show();
+    };
+    if (L.decode) L.decode().then(function () { go(true); }, function () { go(false); });
+    else { L.onload = function () { go(true); }; L.onerror = function () { go(false); }; }
   }
 
   // opts: immediate (no debounce), done(ok)

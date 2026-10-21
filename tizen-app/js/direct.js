@@ -3,8 +3,9 @@
   var D = N.direct = {};
   var EXT = /\.(mkv|mp4|m4v)$/i, SZ = ['size', 'file_size', 'filesize', 'bytes', 'volume'];
 
+  var trim = D.trim = function (s) { return String(s).replace(/^\s+|\s+$/g, ''); };
   function fmtSize(v) {
-    if (typeof v === 'string' && !/^\d+(\.\d+)?$/.test(v)) return /\d/.test(v) ? v.replace(/^\s+|\s+$/g, '') : '';
+    if (typeof v === 'string' && !/^\d+(\.\d+)?$/.test(v)) return /\d/.test(v) ? trim(v) : '';
     v = Number(v); if (!(v > 0)) return '';
     if (v >= 1073741824) return (v / 1073741824).toFixed(1) + ' GB';
     if (v >= 1048576) return Math.round(v / 1048576) + ' MB';
@@ -32,7 +33,7 @@
   // playable audio? tracks = webapis.avplay.getTotalTrackInfo(); returns {ok, select (track index to force, or -1)}
   D.trackBad = function (t) {
     var x = {}; try { x = JSON.parse(t.extra_info) || {}; } catch (e) {}
-    var cc = String(x.fourCC || x.fourcc || '').replace(/^\s+|\s+$/g, ''), c = String(x.codec || x.codec_name || x.audio_codec || '');
+    var cc = trim(x.fourCC || x.fourcc || ''), c = String(x.codec || x.codec_name || x.audio_codec || '');
     return /^(dts.?|mlpa?|trhd)$/i.test(cc) || /dts|truehd|mlp/i.test(c) || /dts|truehd/i.test(cc);
   };
   D.audioCheck = function (tracks, curIdx) {
@@ -49,7 +50,7 @@
     if (!(m instanceof Array)) return out;
     for (i = 0; i < m.length; i++) {
       e = m[i]; u = e && e.direct && (e['default'] || e.url); if (!u) continue;
-      u = String(u).replace(/^\s+|\s+$/g, '');
+      u = trim(u);
       if (failed && failed[u]) continue;
       v = vd[D.fname(u)] || e.a || 'unknown'; if (v === 'bad') continue;
       out.push({ e: e, url: u, ok: v === 'ok' ? 1 : 0, i: i });
@@ -77,7 +78,7 @@
     var a = [p.h ? p.h + 'p' : ''];
     var f = p.hdr10p ? 'HDR10+' : p.hdrOnly ? 'HDR' : ''; if (p.dv) f += (f ? ' ' : '') + 'DV'; if (!f && p.b10) f = '10bit';
     if (f) a.push(f);
-    var parts = [a.join(' ').replace(/^\s+|\s+$/g, '')];
+    var parts = [trim(a.join(' '))];
     if (p.codec) parts.push(p.codec);
     if (p.src) parts.push(p.src);
     if (p.ext) parts.push(p.ext.toUpperCase());
@@ -88,7 +89,7 @@
   D.extract = function (res) {
     var out = [], seen = {}, cnt = 0;
     function add(url, ctx, key) {
-      url = url.replace(/^\s+|\s+$/g, '');
+      url = trim(url);
       if (!/^https?:\/\//i.test(url) || !EXT.test(url.split(/[?#]/)[0]) || seen[url]) return;
       seen[url] = 1;
       var size = '', info = '', i, k;
@@ -97,8 +98,13 @@
         ['label', 'quality', 'title', 'name'].forEach(function (f) { if (typeof ctx[f] === 'string') info += ' ' + ctx[f]; });
       }
       if (key && /(\d{3,4}p|4k|uhd)/i.test(key)) info += ' ' + key;
-      var p = D.parse(url, info);
-      out.push({ url: url, size: size, p: p, label: D.label(p, size) });
+      var p = D.parse(url, info), meta = {};
+      // ids / episode numbers next to the link (shape unverified): file_id feeds resume + progress reporting
+      if (ctx && typeof ctx === 'object' && !(ctx instanceof Array)) {
+        if (ctx.file_id !== undefined && ctx.file_id !== null && ctx.file_id !== '') meta.file_id = ctx.file_id;
+        if (p.episode === null && parseInt(ctx.episode, 10) > 0) { p.episode = parseInt(ctx.episode, 10); p.season = parseInt(ctx.season, 10) || p.season; }
+      }
+      out.push({ url: url, size: size, p: p, label: D.label(p, size), meta: meta });
     }
     function walk(o, d, key) {
       if (d > 9 || ++cnt > 5000 || o === null || o === undefined) return;
@@ -129,22 +135,66 @@
         var inf = it.info || {}, s = parseInt(inf.season, 10) || 1, e = parseInt(inf.episode, 10);
         return x.p.episode !== null && (x.p.season || 1) === s && x.p.episode === e;
       });
-      if (!mine.length || !it.file) return;
-      mine.sort(function (a, b) { return (b.p.h - a.p.h) || ((b.p.hdr ? 1 : 0) - (a.p.hdr ? 1 : 0)); });
+      if (!mine.length) return;
+      if (!it.file) it.file = {}; // stream item without a file object: downloads are its only source
+      mine.sort(byQuality);
       it.file.m3u8 = norm(it.file.m3u8).concat(mine.map(toEntry)); n += mine.length;
     });
     return n;
   };
-  D.fetch = function (post, wantStream) {
+  function byQuality(a, b) { return (b.p.h - a.p.h) || ((b.p.hdr ? 1 : 0) - (a.p.hdr ? 1 : 0)); }
+  // no stream items at all: build playable items from the download links alone (movie -> one item, series -> one per SxxEyy)
+  D.synth = function (ents, isSeries) {
+    var items = [], by = {}, any = [], loose = [];
+    function mk(list, info) {
+      list.sort(byQuality);
+      for (var i = 0; i < list.length && info.file_id === undefined; i++) if (list[i].meta && list[i].meta.file_id !== undefined) info.file_id = list[i].meta.file_id;
+      return { file: { m3u8: list.map(toEntry) }, info: info };
+    }
+    if (!ents.length) return items;
+    if (!isSeries) return [mk(ents.slice(), {})];
+    ents.forEach(function (x) {
+      if (x.p.episode === null) { loose.push(x); return; }
+      var s = x.p.season || 1, k = s + 'x' + x.p.episode;
+      if (!by[k]) { by[k] = { s: s, e: x.p.episode, l: [] }; any.push(by[k]); }
+      by[k].l.push(x);
+    });
+    if (!any.length) return [mk(loose, {})];
+    any.forEach(function (g) { items.push(mk(g.l, { season: g.s, episode: g.e })); });
+    return items.sort(N.ui.epCmp);
+  };
+  // quality tiers: heights >= 1080 (incl. 4K) share the '1080' tier for the saved preference
+  D.tierOf = function (h) { return h >= 1080 ? '1080' : h >= 720 ? '720' : h > 0 ? '480' : ''; };
+  // pick from arr by preferred quality: 'max' = tallest; a tier = exact height, else the tallest below it, else the shortest above it (first wins ties)
+  D.pickTier = function (arr, hOf, pref) {
+    var t = +pref || 0, best = null, bh = 0, i, h;
+    for (i = 0; i < arr.length; i++) {
+      h = hOf(arr[i]) || 0;
+      if (!best) { best = arr[i]; bh = h; continue; }
+      if (!t) { if (h > bh) { best = arr[i]; bh = h; } continue; }
+      if (bh === t) break;
+      if (h === t || (h < t ? (bh > t || h > bh) : (bh > t && h < bh))) { best = arr[i]; bh = h; }
+    }
+    return best;
+  };
+  // ranked candidates -> play order for pref: chosen first, then same height, then the rest as ranked
+  D.order = function (cs, pref) {
+    var c = D.pickTier(cs, function (x) { return x.e.h; }, pref), same = [], rest = [];
+    if (!c) return [];
+    cs.forEach(function (x) { if (x !== c) ((x.e.h || 0) === (c.e.h || 0) ? same : rest).push(x); });
+    return [c].concat(same, rest);
+  };
+  // long: downloads are the only playable source, so wait for them (otherwise they are optional and capped at 6 s)
+  D.fetch = function (post, wantStream, long) {
     var free = post.options && post.options.free_download;
     if (!(wantStream || free)) return Promise.resolve([]);
     var call = N.api.call('download', { post_id: post.id, free_download: wantStream ? 0 : 1 });
-    // never hold the details screen / playback for long on a slow download call
-    var slow = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('timeout')); }, 6000); });
+    var slow = new Promise(function (res, rej) { setTimeout(function () { rej(new Error('timeout')); }, long ? 20000 : 6000); });
     return Promise.race([call, slow]).then(function (j) {
       N.lastDownload = j;
       var r = (j && j.success) ? D.extract(j.result) : [];
+      if (!(j && j.success)) r.failed = true;
       N.lastDownloadEntries = r; return r;
-    }).catch(function (e) { N.lastDownload = { error: String(e && e.message || e) }; return []; });
+    }).catch(function (e) { N.lastDownload = { error: String(e && e.message || e) }; var r = []; r.failed = true; return r; }); // failed: timed out / errored (a clean empty result is not retried)
   };
 })();

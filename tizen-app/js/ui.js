@@ -32,16 +32,52 @@
     return (po.webp && (po.webp.medium || po.webp.large)) || (po.jpg && (po.jpg.medium || po.jpg.large)) || '';
   };
   ui.coverUrl = function (p) { var c = p && p.image && p.image.cover; return c ? (c.webp || c.jpg || '') : ''; };
+  /* Shared image helpers (adopt these in screens.js instead of hand-rolled `new Image()`):
+       ui.preload(src, cb)  fetch + decode off-DOM; cb(ok) once ready (immediately when src is already known-loaded). Returns nothing.
+       ui.mark(src)         record src as loaded (for code that loads images itself)
+       ui.cached(src)       true when src finished loading earlier this session (in-memory LRU of URLs, 400 entries)
+       ui.img(src, cls, cb) <img class="uimg cls" decoding=async> that fades in (class `in`) after it is decoded; cb(ok) optional.
+                            Failed images are left empty (opacity 0), never a broken-image icon.
+     All three degrade to plain onload when img.decode() is missing. */
+  var seen = {}, seenN = 0, seenOld = {};
+  function mark(src) {
+    if (seen[src]) return;
+    seen[src] = 1; if (++seenN > 400) { seenOld = seen; seen = {}; seenN = 0; } // two-generation LRU: cheap, no per-hit bookkeeping
+  }
+  ui.mark = mark;
+  ui.cached = function (src) { return !!(src && (seen[src] || seenOld[src])); };
+  function whenReady(im, cb) {
+    var done = false;
+    function ok() { if (!done) { done = true; cb(true); } }
+    function ko() { if (!done) { done = true; cb(false); } }
+    if (im.decode) im.decode().then(ok, function () { im.complete && im.naturalWidth ? ok() : ko(); });
+    else if (im.complete && im.naturalWidth) ok();
+    else { im.addEventListener('load', ok); im.addEventListener('error', ko); }
+  }
+  ui.preload = function (src, cb) {
+    if (!src) { if (cb) cb(false); return; }
+    if (ui.cached(src)) { mark(src); if (cb) cb(true); return; }
+    var im = new Image(); im.decoding = 'async'; im.src = src;
+    whenReady(im, function (ok) { if (ok) mark(src); if (cb) cb(ok); });
+  };
+  ui.img = function (src, cls, cb) {
+    var im = el('img', 'uimg' + (cls ? ' ' + cls : '')); im.alt = ''; im.decoding = 'async';
+    im.src = src;
+    whenReady(im, function (ok) { if (ok) { mark(src); im.classList.add('in'); } if (cb) cb(ok); });
+    return im;
+  };
+  /* card poster: reveal only after decode so the fade never runs on a half-decoded bitmap */
   ui.load = function (c) {
     if (c._on || !c._src) return; c._on = true;
     var im = c._im; if (!im) return;
-    im.onload = function () { im.classList.add('in'); };
-    im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); c._im = null; if (!c._mq) c._mq = c._pt; };
-    im.src = c._src;
+    var src = c._src;
+    im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); c._im = null; c._on = false; if (!c._mq) c._mq = c._pt; };
+    im.src = src;
+    whenReady(im, function (ok) { if (!ok) return; mark(src); if (c._on && c._im === im && im.getAttribute('src') === src) im.classList.add('in'); });
   };
   ui.unload = function (c) {
     if (!c._on) return; c._on = false;
-    var im = c._im; if (im) { im.classList.remove('in'); im.onload = null; im.removeAttribute('src'); }
+    var im = c._im; if (im) { im.classList.remove('in'); im.removeAttribute('src'); }
   };
 
   /* ---------- cards ---------- */
@@ -118,9 +154,8 @@
         var x = m[t._en]; if (!x || !t.parentNode) return;
         if (x.n && t._etDef) { t._etDef = false; ui.mqText(t._et, x.n); }
         if (!x.s || t._st) return;
-        var url = N.tmdb.img(x.s, 'w300'), st = el('div', 'st'), im = new Image(); t._st = st;
-        im.onload = function () { st.style.backgroundImage = 'url("' + url + '")'; t.insertBefore(st, t.firstChild); void st.offsetWidth; t.classList.add('has-st'); };
-        im.src = url;
+        var url = N.tmdb.img(x.s, 'w300'), st = el('div', 'st'); t._st = st;
+        ui.preload(url, function (ok) { if (!ok) return; st.style.backgroundImage = 'url("' + url + '")'; t.insertBefore(st, t.firstChild); void st.offsetWidth; t.classList.add('has-st'); });
       });
     });
   };
@@ -214,4 +249,52 @@
   };
   // is `dir` ('left'|'right') towards the end edge in the current direction?
   ui.step = function (dir) { var r = N.isRtl(); return (dir === 'right') !== r ? 1 : -1; };
+
+  /* ---------- lite mode: cheaper effects on weak TVs ----------
+     N.lite (bool) mirrors body.lite. Override: localStorage n30.lite = true|false (N.store 'lite'); anything else = auto.
+     Auto = hardwareConcurrency <= 2, deviceMemory <= 2, Samsung model year <= 2017, or a median frame time > 28 ms
+     measured over the first ~1.6 s (applies to that session; remembered once two boots in a row measure slow, 'liteAuto' = streak). ui.setLite(true|false|null) flips it live (null = back to auto). */
+  function modelYear() {
+    try {
+      var m = window.webapis.productinfo.getRealModel() || window.webapis.productinfo.getModel() || '', x = /^(?:UE|QE|UN|QN)\d{2}([A-Z])/.exec(m);
+      return x ? { H: 2014, J: 2015, K: 2016, M: 2017, N: 2018, R: 2019, T: 2020, A: 2021, B: 2022, C: 2023, D: 2024 }[x[1]] || 0 : 0;
+    } catch (e) { return 0; }
+  }
+  function staticLite() {
+    var y = modelYear();
+    return (navigator.hardwareConcurrency || 8) <= 2 || (navigator.deviceMemory || 8) <= 2 || (y > 0 && y <= 2017) || (+N.store.get('liteAuto', 0) || 0) >= 2;
+  }
+  function applyLite(on) { N.lite = !!on; document.body.classList.toggle('lite', !!on); }
+  ui.setLite = function (v) {
+    if (v === true || v === false) N.store.set('lite', v); else N.store.del('lite');
+    if (v !== true && v !== false) N.store.del('liteAuto');
+    applyLite(v === true || v === false ? v : staticLite());
+  };
+  function probeFrames() {
+    var ds = [], last = 0, t0 = 0;
+    function f(t) {
+      if (!t0) t0 = t;
+      if (last) ds.push(t - last);
+      last = t;
+      if (t - t0 < 1600) { requestAnimationFrame(f); return; }
+      ds = ds.slice(3); if (ds.length < 20) return;
+      ds.sort(function (a, b) { return a - b; });
+      if (N.store.get('lite', null) !== null) return;
+      var slow = ds[ds.length >> 1] > 28; // one slow boot can be a busy start: count a streak, a smooth boot resets it
+      N.store.set('liteAuto', slow ? (+N.store.get('liteAuto', 0) || 0) + 1 : 0);
+      if (slow && !N.lite) applyLite(true);
+    }
+    requestAnimationFrame(f);
+  }
+  (function () {
+    var o = N.store.get('lite', null);
+    applyLite(o === true || o === false ? o : staticLite());
+  })();
+  // started by the app once the splash exits: boot-time parsing and the first requests must not count as slow frames
+  var probed = false;
+  ui.probeLite = function () {
+    if (probed) return; probed = true;
+    var o = N.store.get('lite', null);
+    if (o !== true && o !== false && !N.lite) probeFrames();
+  };
 })();

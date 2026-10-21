@@ -98,7 +98,8 @@
         v.onerror = function () { P.onError('video error'); };
         v.onloadedmetadata = go;
         var src = N.proxied(url);
-        if (window.Hls && Hls.isSupported()) {
+        if (isDirectUrl(url)) { v.src = src; } // plain mp4/mkv file: no hls.js
+        else if (window.Hls && Hls.isSupported()) {
           hls = new Hls({ enableWorker: false });
           hls.on(Hls.Events.ERROR, function (ev, d) { if (d && d.fatal) P.onError('hls ' + d.details); });
           hls.on(Hls.Events.MANIFEST_PARSED, function () { setTimeout(go, 0); });
@@ -134,34 +135,64 @@
     return entryUrl(e['default'] || e.file || e.url || e.src || e.link || e.m3u8 || e.path || e.source);
   }
   var isDirectUrl = function (u) { return /\.(mkv|mp4|m4v)([?#]|$)/i.test(String(u)); };
-  // best playable download file ("Max"): see N.direct.cands; P.failed = urls already tried-and-failed for this item
-  P.failed = {};
-  function bestDirect(m) { var c = N.direct.cands(m, P.failed)[0]; return c && c.url; }
+  var trim = function (s) { return N.direct.trim(s); };
+  var hOfLabel = function (e) { return parseInt(String(e && e.label || '').replace(/\D/g, ''), 10) || 0; };
+  var isAuto = function (e) { return !!e && /^(auto|خودکار)$/i.test(String(e.label || '')); };
+  // stream (HLS) entries of a quality list: everything that is not a download file
+  function hlsEntries(m) {
+    var out = [];
+    if (!(m instanceof Array)) { var u0 = entryUrl(m); return u0 ? [{ url: trim(u0), label: 'HLS' }] : out; }
+    m.forEach(function (e) { var u = entryUrl(e); if (u && !(e && e.direct)) out.push({ url: trim(u), label: (e && e.label) || 'HLS', e: e }); });
+    return out;
+  }
+  P.hasHls = function (item) { return hlsEntries(item && item.file && item.file.m3u8).length > 0; };
+  P.hasDirect = function (item) { var m = item && item.file && item.file.m3u8; return m instanceof Array && m.some(function (e) { return e && e.direct; }); };
+  P.playable = function (item) { return P.hasHls(item) || P.hasDirect(item); };
+  // persisted preferred quality: 'max' | '1080' | '720' | '480'; unset -> max when download files play first, else 1080
+  P.qPref = function () {
+    var v = String(N.store.get('qPref', ''));
+    return v === 'max' || v === '1080' || v === '720' || v === '480' ? v : (P.dlMode() === 'auto' ? 'max' : '1080');
+  };
+  // download files this backend may play for m, in play order for pref (default: the saved one). P.failed = urls already failed for this item.
+  // AVPlay: unless the mode is 'off' (then only when the item has no stream). <video>: only as the no-stream fallback, .mp4 first.
+  P.directOrder = function (m, pref) {
+    if (!(m instanceof Array)) return [];
+    var noHls = !hlsEntries(m).length;
+    if (hasAV() ? (P.dlMode() === 'off' && !noHls) : !noHls) return [];
+    var cs = N.direct.cands(m, P.failed); pref = pref || P.qPref();
+    if (hasAV()) return N.direct.order(cs, pref);
+    var mp4 = cs.filter(function (x) { return !!(x.e.p && x.e.p.ext === 'mp4'); });
+    return N.direct.order(mp4, pref).concat(N.direct.order(cs.filter(function (x) { return mp4.indexOf(x) < 0; }), pref));
+  };
+  // preferred stream entry; 'Auto' only when no fixed quality exists
+  function pickHls(m, pref) {
+    var fixed = hlsEntries(m).filter(function (x) { return !isAuto(x.e); }), c = N.direct.pickTier(fixed, function (x) { return hOfLabel(x); }, pref);
+    if (c) return c.url;
+    var au = hlsEntries(m).filter(function (x) { return isAuto(x.e); })[0];
+    return au && au.url;
+  }
   // noDirect: HLS only (used for the fallback after a direct file fails)
   P.pickUrl = function (m, noDirect) {
     if (!(m instanceof Array)) return entryUrl(m);
-    var mode = P.dlMode(), dl = hasAV() && !noDirect && mode !== 'off' ? bestDirect(m) : null;
-    if (dl && mode === 'auto') return dl;
-    // Always prefer the highest fixed quality (e.g. 2160p); Auto only as fallback
-    var best = null, bestH = -1, auto = null, i, e, u;
-    for (i = 0; i < m.length; i++) {
-      e = m[i]; u = entryUrl(e); if (!u || (e && e.direct)) continue;
-      if (e && /^(auto|خودکار)$/i.test(String(e.label || ''))) { auto = u; continue; }
-      var h = parseInt(String(e && e.label || '').replace(/\D/g, ''), 10) || 0;
-      if (h > bestH) { best = u; bestH = h; }
-    }
-    return best || auto || dl;
+    var dl = noDirect ? [] : P.directOrder(m), hls = pickHls(m, P.qPref());
+    if (dl.length && (P.dlMode() === 'auto' || !hls)) return dl[0].url;
+    return hls || (dl[0] && dl[0].url);
   };
-  // download files setting: 'off' (not fetched/listed) | 'menu' (Quality menu only) | 'auto' (play best file first)
+  // download files setting: 'off' (not listed, unless there is no stream) | 'menu' (Quality menu only) | 'auto' (play best file first)
   P.dlMode = function () { var v = N.store.get('dlMode', null); if (v === null) v = N.store.get('preferDl', false) === true ? 'auto' : 'menu'; return v; };
-  // quality entries the current backend can play
+  // Quality menu entries: {url, label, key} key = value saved as qPref when picked (null = don't save); max marks the "Max" row
   P.qualities = function (item) {
-    var m = item && item.file && item.file.m3u8, out = [];
+    var m = item && item.file && item.file.m3u8, out = [], mx = P.directOrder(m, 'max')[0], tiers = [];
     if (!(m instanceof Array)) return out;
-    m.forEach(function (e) { var u = entryUrl(e); if (u && !(e && e.direct)) out.push({ url: String(u).replace(/^\s+|\s+$/g, ''), label: (e && e.label) || 'HLS' }); });
-    var c = hasAV() && P.dlMode() !== 'off' ? N.direct.cands(m, P.failed)[0] : null; // one "Max" entry: best playable download file
-    if (c) out.unshift({ url: c.url, label: N.t('maxQ') + ' · ' + (N.direct.short(c.e.p) || 'MKV'), max: true });
-    return out;
+    if (mx) {
+      tiers.push({ url: mx.url, label: N.t('maxQ') + ' · ' + (N.direct.short(mx.e.p) || 'MKV'), key: 'max', max: true });
+      ['1080', '720', '480'].forEach(function (t) {
+        var c = P.directOrder(m, t)[0];
+        if (c && String(c.e.h) === t) tiers.push({ url: c.url, label: t + 'p · ' + N.t('fileQ'), key: t });
+      });
+    }
+    hlsEntries(m).forEach(function (x) { out.push({ url: x.url, label: x.label + (tiers.length ? ' · ' + N.t('streamQ') : ''), key: isAuto(x.e) ? null : N.direct.tierOf(hOfLabel(x)) || null }); });
+    return tiers.concat(out);
   };
 
   /* ---------- subtitles ---------- */
@@ -255,13 +286,13 @@
     P.index = i; P.paused = false; P.cues = []; P.subLang = o.keepSub ? P.subLang : N.store.get('sub', 'off');
     $('subtitle').textContent = ''; P.hideSkip(); P.hideUpNext(true); P.closeEps(true);
     var m3u8 = o.url || (item.file && P.pickUrl(item.file.m3u8));
-    if (typeof m3u8 === 'string') m3u8 = m3u8.replace(/^\s+|\s+$/g, '');
+    if (typeof m3u8 === 'string') m3u8 = trim(m3u8);
     if (!m3u8 || typeof m3u8 !== 'string') { var raw = ''; try { raw = JSON.stringify(item.file && item.file.m3u8).slice(0, 160); } catch (e) {} N.toast(N.t('noStream') + ' ' + raw, 6000); return P.close(); }
     $('osd-title').textContent = N.title(P.post);
     $('osd-sub').textContent = seriesLine(item, i);
     $('osd-hint').textContent = P.items.length > 1 ? N.t('hintPlayerEps') : N.t('hintPlayer');
     var start = 0, info = item.info || {};
-    if (P.resume && String(P.resume.file_id) === String(info.file_id)) start = Number(P.resume.time) || 0;
+    if (P.resume && info.file_id !== undefined && String(P.resume.file_id) === String(info.file_id)) start = Number(P.resume.time) || 0;
     P.resume = null;
     if (o.start !== undefined) start = o.start;
     P.curUrl = m3u8; P.curDirect = isDirectUrl(m3u8); P.loadStart = start; P.subOffV = P.subOff();
@@ -301,16 +332,18 @@
     if (N.onPlayerClosed) N.onPlayerClosed();
   };
   P.onError = function (m) {
-    // a direct file failed: try the next-ranked download file (each URL once), then fall back to the best HLS entry at the same position
+    // a direct file failed: try the next download file (same height first, each URL once), then fall back to the best HLS entry at the same position
     if (P.open && P.curDirect) {
-      var item = P.items[P.index], t = Math.max((P.be && P.be.time()) || 0, P.loadStart || 0);
-      P.failed[String(P.curUrl).replace(/^\s+|\s+$/g, '')] = 1;
-      var nx = item && item.file && bestDirect(item.file.m3u8);
-      if (nx) { P.playIndex(P.index, { url: nx, start: t, keepSub: true, keepFail: true }); return; }
-      var u = item && item.file && P.pickUrl(item.file.m3u8, true);
+      var item = P.items[P.index], t = Math.max((P.be && P.be.time()) || 0, P.loadStart || 0), cm = item && item.file && item.file.m3u8, fh = 0;
+      P.failed[trim(P.curUrl)] = 1;
+      if (cm instanceof Array) cm.forEach(function (e) { if (e && e.direct && trim(e['default'] || e.url || '') === trim(P.curUrl)) fh = e.h || 0; });
+      var nx = P.directOrder(cm), same = nx.filter(function (x) { return (x.e.h || 0) === fh; });
+      nx = same.concat(nx.filter(function (x) { return same.indexOf(x) < 0; }))[0];
+      if (nx) { P.playIndex(P.index, { url: nx.url, start: t, keepSub: true, keepFail: true }); return; }
+      var u = item && item.file && P.pickUrl(cm, true);
       if (u && !isDirectUrl(u)) {
         N.toast(N.t('dlFallback'), 4000);
-        P.playIndex(P.index, { url: String(u).replace(/^\s+|\s+$/g, ''), start: t, keepSub: true }); return;
+        P.playIndex(P.index, { url: trim(u), start: t, keepSub: true }); return;
       }
     }
     P.loading = false; clearTimeout(P.loadT); N.toast(N.t('playErr') + ': ' + m, 6000); P.spin(false); P.showOsd(); };
@@ -319,7 +352,7 @@
   /* ---------- progress reporting (observer) ---------- */
   function sameEpisode(p) {
     var item = P.items[P.index], info = item && item.info;
-    return !!(info && String(info.file_id) === String(p.file_id));
+    return !!(info && info.file_id !== undefined && String(info.file_id) === String(p.file_id));
   }
   function sendReport(p, final, tryNo) {
     N.api.call('observer', p).then(function (j) {
@@ -338,6 +371,7 @@
     if (!P.be || !N.isLoggedIn() || P.loading) return;
     var item = P.items[P.index]; if (!item) return;
     var info = item.info || {}, u = N.session.user || {};
+    if (info.file_id === undefined || info.file_id === null || info.file_id === '') return; // synthesized from download links: nothing to report against
     var time = Math.floor(P.be.time()), duration = Math.floor(P.be.duration());
     if (!isFinite(time) || !isFinite(duration) || time < 1 || duration <= 0) return;
     var p = {
@@ -487,10 +521,14 @@
     }
     var audio = P.be.audioTracks();
     if (audio.length) section(N.t('audio'), audio, function (o) { P.be.setAudio(o.id); });
-    var q = P.qualities(item);
-    if (q.length > 1) {
-      q.forEach(function (x) { x.sel = x.max ? !!P.curDirect : x.url === P.curUrl; });
-      section(N.t('quality'), q, function (o) { if (!o.sel) P.playIndex(P.index, { url: o.url, start: P.be.time(), keepSub: true }); });
+    var q = P.qualities(item), urls = {}, pf = P.qPref(), cur = null;
+    q.forEach(function (x) { urls[x.url] = 1; if (x.url === P.curUrl && (!cur || x.key === pf)) cur = x; }); // equal URLs (Max = 1080p file): mark the row matching the saved preference
+    if (Object.keys(urls).length > 1) {
+      q.forEach(function (x) { x.sel = x === cur; });
+      section(N.t('quality'), q, function (o) {
+        if (o.key) N.store.set('qPref', o.key);
+        if (!o.sel) P.playIndex(P.index, { url: o.url, start: P.be.time(), keepSub: true });
+      });
     }
     var sopts = [{ id: 'off', label: N.t('off'), sel: P.subLang === 'off' }];
     availableSubs(item).forEach(function (l) { sopts.push({ id: l, label: l === 'en' ? N.t('english') : N.t('persian'), sel: P.subLang === l }); });

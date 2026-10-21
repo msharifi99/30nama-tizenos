@@ -14,19 +14,9 @@
   ];
 
   /* ---------------- home cache ---------------- */
-  var hc = { t: 0, p: null };
-  N.getHome = function () {
-    if (hc.p && Date.now() - hc.t < 90000) return hc.p;
-    hc.t = Date.now();
-    hc.p = N.api.get('home_stream').then(function (r) { N.store.set('homeCache', r); return r; }).catch(function (e) {
-      hc.p = null;
-      var c = N.store.get('homeCache', null); // last good Home: show it instead of an error, and retry in the background
-      if (c) { setTimeout(function () { N.getHome(); }, 15000); return c; }
-      throw e;
-    });
-    return hc.p;
-  };
-  N.dropHome = function () { hc.p = null; };
+  // api.cached: fresh for 90 s, then the persisted copy is shown at once (also on a cold start) while a background refresh feeds the next visit; the last copy also covers a failed request
+  N.getHome = function () { return N.api.cached('home_stream', {}, N.api.P.home); };
+  N.dropHome = function () { N.api.drop('home_stream'); };
 
   /* ---------------- splash ---------------- */
   var splash = { t0: Date.now(), done: false, dotsT: null, failT: null };
@@ -34,6 +24,7 @@
     if (splash.done) return; splash.done = true; clearTimeout(splash.dotsT); clearTimeout(splash.failT);
     var s = $('splash'); s.classList.add('out');
     setTimeout(function () { s.style.display = 'none'; }, 450);
+    setTimeout(function () { if (N.ui.probeLite) N.ui.probeLite(); }, 500); // after the first screen's entry animation
   }
   N.splashReady = function () {
     if (splash.done) return;
@@ -150,6 +141,7 @@
   }
   function build(entry) {
     var oldCur = current, old = rootEl;
+    N.prefetch.cancel();
     if (oldCur && oldCur.destroy) { try { oldCur.destroy(); } catch (e) {} }
     if (old && old.parentNode) old.parentNode.removeChild(old);
     N.nav.clear(); N.nav.locked = false;
@@ -157,12 +149,22 @@
     setChrome(entry.name);
     rail.mark();
     current = null; // a throwing screen must not leave the destroyed one in charge of Back
-    current = N.screens[entry.name](r, entry.params || {}, entry.focus) || {};
+    try { current = N.screens[entry.name](r, entry.params || {}, entry.focus) || {}; }
+    catch (e) { // a screen that throws while building: an error view with Retry; Back keeps working (current is an empty screen)
+      try { console.warn('screen build', e && e.stack); } catch (x) {}
+      current = {};
+      try {
+        r.innerHTML = ''; N.nav.clear(); N.nav.locked = false;
+        var w = el('div', 'center-msg'); w.appendChild(N.ui.icon('warn'));
+        w.appendChild(el('div', 'm', N.t('error') + '. ' + N.t('tryAgain')));
+        var b = N.ui.btn(N.t('retry'), function () { build(entry); }, 'primary'); w.appendChild(b); r.appendChild(w); N.nav.focus(b, true);
+      } catch (x) {}
+    }
   }
   function render(entry) {
     clearTimeout(swapT);
     if (rail.open) { rail.open = false; rail.root.classList.remove('open'); rail.mem = null; }
-    if (rootEl && current) {
+    if (rootEl && current && !N.lite) { // lite: no 150 ms leave fade, build at once
       rootEl.classList.add('leave'); N.nav.clear(); N.nav.locked = true;
       swapT = setTimeout(function () { build(entry); }, 150);
     } else build(entry);
@@ -174,7 +176,7 @@
     if (opts.reset) stack = [entry];
     else if (opts.replace && stack.length) stack[stack.length - 1] = entry;
     else {
-      if (stack.length && current && current.focusState) stack[stack.length - 1].focus = current.focusState();
+      if (stack.length && current && current.focusState) { try { stack[stack.length - 1].focus = current.focusState(); } catch (e) { stack[stack.length - 1].focus = null; } }
       stack.push(entry);
     }
     render(entry);
@@ -194,12 +196,13 @@
   };
   N.onLogout = function () { N.dropHome(); N.go('login', {}, { reset: true }); };
   N.onPlayerClosed = function () {
+    N.api.drop(['stream', 'continue_watching']); // resume positions changed while playing
     N.stage.restore();
     if (current && current.onPlayerClosed) current.onPlayerClosed();
     else if (N.nav.cur === null && rootEl) N.nav.focusFirst(rootEl);
   };
   N.rerender = function () { // re-render the current screen (language change etc.)
-    var e = stack[stack.length - 1]; if (e) { if (current && current.focusState) e.focus = current.focusState(); build(e); }
+    var e = stack[stack.length - 1]; if (e) { if (current && current.focusState) { try { e.focus = current.focusState(); } catch (x) { e.focus = null; } } build(e); }
   };
 
   function bootError(e) {
@@ -211,23 +214,31 @@
     var b = N.ui.btn(N.t('retry'), boot, 'primary'); w.appendChild(b); r.appendChild(w); N.nav.focus(b, true);
   }
   function boot() {
-    N.api.init().then(function () {
+    // Fast start: the endpoint that worked last time is used at once and api.init re-verifies it in the background (a wrong guess only costs one retry:
+    // requests read api.host when they run). The profile refresh no longer gates Home; a revoked session still sends the user to the login screen.
+    var A = N.api, h = N.store.get('host', null), ki = N.store.get('hostKey', -1), ks = N.config.apiKeys, fast = !!h && ki >= 0 && ki < ks.length;
+    if (fast) { A.host = h; A.key = ks[ki]; A.keyIndex = ki; }
+    var ini = A.init();
+    function profile() {
+      var was = N.isLoggedIn();
+      return A.call('user', {}).then(function (j) {
+        if (j && j.success && j.result) {
+          var u = j.result.user_session ? j.result : (j.result.user || null);
+          if (u && u.user_session) N.setSession(u); else { N.session.user = Object.assign({}, N.session.user, j.result); N.store.set('session', N.session); }
+        }
+      }).catch(function () {}).then(function () { if (was && !N.isLoggedIn() && fast) N.onLogout(); });
+    }
+    function start() {
       booted = true;
       rail.build();
-      var p = Promise.resolve();
-      if (N.isLoggedIn()) {
-        p = N.api.call('user', {}).then(function (j) {
-          if (j && j.success && j.result) {
-            var u = j.result.user_session ? j.result : (j.result.user || null);
-            if (u && u.user_session) N.setSession(u); else { N.session.user = Object.assign({}, N.session.user, j.result); N.store.set('session', N.session); }
-          }
-        }).catch(function () {});
-      }
-      return p;
-    }).then(function () {
+      var p = N.isLoggedIn() ? profile() : Promise.resolve();
+      if (!fast) return p;
+    }
+    (fast ? Promise.resolve() : ini).then(start).then(function () {
       if (N.isLoggedIn() || N.store.get('guest', false) === true) N.go('home', {}, { reset: true });
       else N.go('login', {}, { reset: true });
     }).catch(bootError);
+    if (fast) ini.catch(function (e) { if (!A.lastOk) bootError(e); }); // nothing ever answered: the cached endpoint is dead too
   }
 
   // Fit the 1920x1080 stage to the window for desktop preview. On TVs the viewport meta
