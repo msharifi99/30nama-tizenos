@@ -21,6 +21,9 @@
     var p = el;
     while (p && p !== document.body) {
       if (p.classList && p.classList.contains('leave')) return false;
+      // A closing sheet stays painted briefly, but must stop accepting focus immediately.
+      if ((p.id === 'player-menu' || p.id === 'player-eps') && !p.classList.contains('open')) return false;
+      if (p.classList && p.classList.contains('sheet-eps') && !p.parentNode.classList.contains('eps')) return false;
       p = p.parentNode;
     }
     return true;
@@ -108,6 +111,7 @@
   var lastKey = 0, fastT = null, fast = false;
   nav.settleFns = [];
   nav.isFast = function () { return fast; };
+  nav.repeating = false;
   nav.onSettle = function (fn) { nav.settleFns.push(fn); };
   nav.offSettle = function (fn) { var i = nav.settleFns.indexOf(fn); if (i >= 0) nav.settleFns.splice(i, 1); };
   function trackRepeat(e) {
@@ -124,9 +128,13 @@
   document.addEventListener('keydown', function (e) {
     var k = e.keyCode;
     if (nav.locked && k !== K.BACK && k !== K.ESC) { e.preventDefault(); return; }
+    nav.repeating = !!e.repeat;
     trackRepeat(e);
     for (var i = nav.handlers.length - 1; i >= 0; i--) {
       if (nav.handlers[i](e) === true) { e.preventDefault(); return; }
+    }
+    if (k === K.PLAYPAUSE && nav.onMenuShortcut && nav.onMenuShortcut(e)) {
+      e.preventDefault(); return;
     }
     if (k === K.BACK || k === K.ESC || (k === K.BACKSPACE && !isInput())) {
       e.preventDefault(); if (N.onBack) N.onBack(); return;
@@ -147,6 +155,7 @@
     }
     else if (k === K.TAB) { e.preventDefault(); } // native Tab must not scroll the fixed TV canvas
   });
+  document.addEventListener('keyup', function () { nav.repeating = false; });
   // mouse support for desktop testing (only on real pointer movement, so content sliding under a still cursor never steals focus)
   document.addEventListener('mousemove', function (e) {
     if (!e.movementX && !e.movementY) return;

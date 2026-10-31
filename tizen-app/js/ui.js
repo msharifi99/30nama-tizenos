@@ -101,6 +101,16 @@
   ui.epTile = function (it, idx, o) {
     o = o || {}; var i = it.info || {}, n = ui.epLabel(i.episode, idx + 1), e = el('div', 'ep f');
     e._en = ui.epNum(i.episode) || idx + 1;
+    if (o.post) {
+      e.classList.add('episode-card');
+      var fallbackArt = ui.coverUrl(o.post) || ui.posterUrl(o.post);
+      var art = ui.coverUrl(it) || ui.posterUrl(it) || fallbackArt;
+      if (art) {
+        var image = el('img', 'episode-art'); image.alt = ''; image.decoding = 'async'; image.src = art;
+        image.onerror = function () { if (fallbackArt && this.getAttribute('src') !== fallbackArt) this.src = fallbackArt; else this.style.display = 'none'; };
+        e.appendChild(image);
+      }
+    }
     e.appendChild(el('div', 'en tab' + (n.length > 3 ? ' sm' : ''), 'E' + (/^\d$/.test(n) ? '0' + n : n)));
     var nm = ui.epName(it), et = ui.mq(nm || (N.t('episode') + ' ' + n), 'et mqv');
     e.appendChild(et); e._et = e._mq = et; e._etDef = !nm;
@@ -171,16 +181,37 @@
     if (N.lang === 'fa') return (h ? h + ' ساعت ' : '') + (m ? m + ' دقیقه' : '');
     return (h ? h + 'h ' : '') + (m ? m + 'm' : '');
   };
-  // Meta line: [IMDb 7.8] ([RT 86%] [Metacritic 74] if allScores) 30nama-score · year · duration · [age] · genres
-  ui.meta = function (post, nGenres, allScores) {
+  // Meta line: [IMDb 7.8] 30nama-score · year · duration · [age] · genres
+  ui.meta = function (post, nGenres, options) {
     var m = el('div', 'meta'), pi = post.info || {}, sc = post.score || {}, bits = 0;
-    function dot() { if (m.lastChild) m.appendChild(el('i', 'dot-s')); }
-    if (sc.imdb && sc.imdb.score) { m.appendChild(el('span', 'imdb tab', 'IMDb ' + sc.imdb.score)); }
-    if (allScores && sc.rottentomatoes && sc.rottentomatoes.score) {
-      var rt = el('span', 'crit rt tab'); rt.appendChild(ui.icon('tomato')); rt.appendChild(document.createTextNode(sc.rottentomatoes.score + '%')); m.appendChild(rt);
+    function rating(label, value, cls) {
+        if (!value) return;
+        var badge = el('span', 'rating-badge ' + cls); badge.dir = 'ltr';
+        badge.appendChild(el('span', 'rating-source', label)); badge.appendChild(el('b', 'rating-value tab', String(value))); m.appendChild(badge);
+      }
+    var allScores = options === true || !!(options && options.allScores);
+    if (options && options.details) {
+      m.classList.add('meta-details');
+      rating('IMDb', sc.imdb && sc.imdb.score, 'rating-imdb');
+      rating('30nama', sc['30nama'] && sc['30nama'].score, 'rating-nama');
+      if (allScores) { rating('RT', sc.rottentomatoes && sc.rottentomatoes.score ? sc.rottentomatoes.score+'%' : '', 'rating-rt'); rating('Metacritic', sc.metacritic && sc.metacritic.score, 'rating-critic'); }
+      var units = 0;
+      function unit(value, cls) {
+        if (!value) return;
+        var part = el('span', 'meta-unit ' + (cls || ''));
+        if (units++) part.appendChild(el('i', 'meta-separator'));
+        part.appendChild(el('span', cls === 'meta-age' ? 'age-value' : 'tab', String(value))); m.appendChild(part);
+      }
+      unit(pi.year && (pi.year + (pi.year_end && pi.year_end !== pi.year && (post.options || {}).is_series ? '–' + pi.year_end : '')), 'meta-year');
+      unit(ui.duration(pi.time && pi.time.default), 'meta-runtime');
+      unit(pi.age, 'meta-age');
+      if (post.genre && post.genre.length) unit(post.genre.slice(0,nGenres || 2).map(function (g) { return g.name; }).join(', '), 'meta-genres');
+      return m;
     }
-    if (allScores && sc.metacritic && sc.metacritic.score) { m.appendChild(el('span', 'crit tab', 'Metacritic ' + sc.metacritic.score)); }
-    if (sc['30nama'] && sc['30nama'].score) { var s3 = el('span', 'sc tab', String(sc['30nama'].score)); m.appendChild(s3); }
+    function dot() { if (m.lastChild) m.appendChild(el('i', 'dot-s')); }
+    rating('IMDb', sc.imdb && sc.imdb.score, 'rating-imdb');
+    rating('30nama', sc['30nama'] && sc['30nama'].score, 'rating-nama');
+    if (allScores) { rating('RT', sc.rottentomatoes && sc.rottentomatoes.score ? sc.rottentomatoes.score+'%' : '', 'rating-rt'); rating('Metacritic', sc.metacritic && sc.metacritic.score, 'rating-critic'); }
     if (pi.year) { dot(); m.appendChild(el('span', 'tab', pi.year + (pi.year_end && pi.year_end !== pi.year && (post.options || {}).is_series ? '–' + pi.year_end : ''))); }
     var d = ui.duration(pi.time && pi.time.default); if (d) { dot(); m.appendChild(el('span', 'tab', d)); }
     if (pi.age) { dot(); m.appendChild(el('span', 'age', pi.age)); }

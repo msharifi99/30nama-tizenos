@@ -102,9 +102,9 @@
     }), 12000);
   };
   var inflight = {};
-  // o: {ttl, slim(json)} ; the slimmed value is what is cached and returned
+  // o: {ttl, slim(json), schema} (schema versions only the local normalized cache) ; the slimmed value is what is cached and returned
   T.get = function (path, params, o) {
-    o = o || {}; var key = path + '?' + qs(params);
+    o = o || {}; var key = path + '?' + qs(params) + (o.schema ? '|schema=' + o.schema : '');
     var c = cget(key, o.ttl || TTL.details);
     if (c) return Promise.resolve(c.v);
     if (inflight[key]) return inflight[key];
@@ -156,23 +156,25 @@
     m = post.imdb_id && /tt\d{6,10}/.exec(post.imdb_id); return m ? m[0] : '';
   }
   function bestCand(cands, titles, year, tv) {
-    var best = null, bs = 0;
+    var best = null, bs = 0, runner = 0;
     cands.forEach(function (c) {
-      var s = 0;
-      titles.forEach(function (t) { s = Math.max(s, sim(t, c.title), c.orig ? sim(t, c.orig) : 0); });
-      if (s < 0.8) return;
-      var sc = s;
-      if (year && c.year) {
-        var d = Math.abs(year - c.year);
-        if (d === 0) sc += 0.25; else if (d === 1) sc += 0.1; else if (!tv || d > 3) return; else sc -= 0.2;
+      if (c.kind !== (tv ? 'tv' : 'movie')) return;
+      var similarity = 0;
+      titles.forEach(function (t) { similarity = Math.max(similarity, sim(t, c.title), c.orig ? sim(t, c.orig) : 0); });
+      if (similarity < 0.9 || (!year && similarity < 1)) return;
+      var score = similarity;
+      if (year) {
+        if (!c.year || Math.abs(year - c.year) > 1) return;
+        score += year === c.year ? 0.25 : 0.1;
       }
-      if (sc > bs) { bs = sc; best = c; }
+      if (score > bs) { runner = bs; bs = score; best = c; }
+      else runner = Math.max(runner, score);
     });
-    return best;
+    return best && bs - runner >= 0.1 ? best : null;
   }
   T.match = function (post) {
     if (post._tm) return Promise.resolve(post._tm);
-    var key = 'm.' + post.id, c = cget(key, function (e) { return e.v ? TTL.match : TTL.miss; });
+    var key = 'm3.' + post.id, c = cget(key, function (e) { return e.v ? TTL.match : TTL.miss; });
     if (c) return Promise.resolve(c.v || null);
     var tv = isTv(post), year = postYear(post), imdb = postImdb(post);
     var raw = (post.title && post.title.english) || '', titles = [stripYear(raw)];
@@ -181,7 +183,7 @@
       if (!imdb) return Promise.resolve(null);
       return T.get('/find/' + imdb, { external_source: 'imdb_id', language: 'en-US' }, { ttl: TTL.details, slim: function (j) {
         return { movie: (j.movie_results || []).map(function (r) { return slimItem(r, 'movie'); }), tv: (j.tv_results || []).map(function (r) { return slimItem(r, 'tv'); }) };
-      } }).then(function (r) { var x = (tv ? r.tv : r.movie)[0] || (tv ? r.movie : r.tv)[0]; return x ? { id: x.id, kind: x.kind } : null; }).catch(function () { return null; });
+      } }).then(function (r) { var list = tv ? r.tv : r.movie, x = list.length === 1 ? list[0] : null; return x ? { id: x.id, kind: x.kind } : null; });
     }
     function search(withYear) {
       var p = { query: titles[0], include_adult: 'false', language: 'en-US' };
@@ -189,8 +191,8 @@
       return T.get('/search/' + (tv ? 'tv' : 'movie'), p, { ttl: TTL.details, slim: listSlim(tv ? 'tv' : 'movie') })
         .then(function (list) { var b = bestCand(list, titles, year, tv); return b ? { id: b.id, kind: b.kind } : null; });
     }
-    var p = viaImdb().then(function (m) { return m || search(true); })
-      .then(function (m) { return m || (year ? search(false) : null); })
+    // An IMDb ID is authoritative: a missing or wrong-type result must not become a fuzzy match.
+    var p = (imdb ? viaImdb() : search(true).then(function (m) { return m || (year ? search(false) : null); }))
       .then(function (m) { cput(key, m || 0); return m; });
     return p;
   };
@@ -204,11 +206,11 @@
   function slimDetails(j, kind) {
     var cr = j.credits || {}, d = {
       id: j.id, kind: kind, title: j.title || j.name || '', tagline: j.tagline || '', overview: j.overview || '',
-      rating: j.vote_average || 0, votes: j.vote_count || 0, status: j.status || '',
+      releaseDate: j.release_date || j.first_air_date || '', status: j.status || '',
       runtime: kind === 'movie' ? (j.runtime || 0) : ((j.episode_run_time && j.episode_run_time[0]) || (j.last_episode_to_air && j.last_episode_to_air.runtime) || 0),
       bd: j.backdrop_path || '', logo: pickLogo(j.images && j.images.logos),
       imdb: (j.external_ids && j.external_ids.imdb_id) || j.imdb_id || '',
-      seasons: j.number_of_seasons || 0, cast: [], crew: [], reviews: [], recs: [], nets: [], next: null
+      seasons: j.number_of_seasons || 0, cast: [], crew: [], recs: [], nets: [], next: null, nextSeason: null
     };
     (cr.cast || []).slice(0, 16).forEach(function (c) { d.cast.push({ n: c.name, c: c.character || '', p: c.profile_path || '' }); });
     var seen = {};
@@ -220,22 +222,28 @@
     (cr.crew || []).forEach(function (c) { if (kind === 'movie' && c.job === 'Original Music Composer') addCrew(c.name, 'Composer', c.profile_path); });
     var nets = kind === 'tv' ? (j.networks || []) : (j.production_companies || []);
     var ns = {}; nets.forEach(function (n) { if (n.name && !ns[n.name] && d.nets.length < 2) { ns[n.name] = 1; d.nets.push(n.name); } });
-    ((j.reviews && j.reviews.results) || []).slice(0, 8).forEach(function (r) {
-      var txt = String(r.content || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n');
-      if (txt.length > 4000) txt = txt.slice(0, 4000) + '…';
-      if (txt.length < 20) return;
-      d.reviews.push({ a: r.author || (r.author_details && r.author_details.username) || '', r: (r.author_details && r.author_details.rating) || 0, t: txt, d: (r.created_at || '').slice(0, 10) });
-    });
     ((j.recommendations && j.recommendations.results) || []).forEach(function (r) { if (r.id) d.recs.push(slimItem(r, kind)); });
-    var n = j.next_episode_to_air;
-    if (n && n.air_date) d.next = { d: n.air_date, s: n.season_number, e: n.episode_number };
+    var now = new Date(), today = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+    function scheduled(iso) {
+      if (typeof iso !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(iso) || iso < today) return false;
+      var date = new Date(iso + 'T00:00:00Z'); return !isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso;
+    }
+    if (kind === 'tv' && j.status !== 'Ended' && j.status !== 'Canceled') {
+      var n = j.next_episode_to_air, lastSeason = +(j.last_episode_to_air && j.last_episode_to_air.season_number) || 0;
+      if (n && n.season_number > 0 && n.episode_number > 0 && scheduled(n.air_date)) d.next = { d: n.air_date, s: n.season_number, e: n.episode_number };
+      (j.seasons || []).forEach(function (season) {
+        if (season.season_number <= lastSeason || season.season_number <= 0 || !scheduled(season.air_date)) return;
+        if (!d.nextSeason || season.air_date < d.nextSeason.d) d.nextSeason = { d: season.air_date, s: season.season_number };
+      });
+      if (d.next && d.next.e === 1 && (!d.nextSeason || d.next.s < d.nextSeason.s)) d.nextSeason = { d: d.next.d, s: d.next.s };
+    }
     return d;
   }
   T.details = function (post) {
     return T.match(post).then(function (m) {
       if (!m) return null;
-      var base = T.get('/' + m.kind + '/' + m.id, { language: 'en-US', append_to_response: 'credits,reviews,videos,images,recommendations,external_ids', include_image_language: 'en,null' },
-        { ttl: TTL.details, slim: function (j) { return slimDetails(j, m.kind); } });
+      var base = T.get('/' + m.kind + '/' + m.id, { language: 'en-US', append_to_response: 'credits,images,recommendations,external_ids', include_image_language: 'en,null' },
+        { ttl: m.kind === 'tv' ? 6 * HR : TTL.details, schema: m.kind === 'tv' ? 'schedule2' : '', slim: function (j) { return slimDetails(j, m.kind); } });
       var loc = N.lang === 'fa' ? T.get('/' + m.kind + '/' + m.id, { language: 'fa-IR' }, { ttl: TTL.details, slim: function (j) { return { tagline: j.tagline || '', overview: j.overview || '' }; } }).catch(function () { return null; }) : Promise.resolve(null);
       return Promise.all([base, loc]).then(function (r) {
         var d = r[0]; if (!r[1]) return d;
@@ -281,7 +289,7 @@
     p.then(j.res, j.rej).then(function () { active--; pump(); });
     pump();
   }
-  function pool(fn) { return new Promise(function (res, rej) { q.push({ fn: fn, res: res, rej: rej }); pump(); }); }
+  function pool(fn, foreground) { return new Promise(function (res, rej) { var job = { fn: fn, res: res, rej: rej, foreground: foreground }, i = 0; if (foreground) { while (i < q.length && q[i].foreground) i++; q.splice(i, 0, job); } else q.push(job); pump(); }); }
   function retrying(fn, tries) {
     return fn().catch(function (e) {
       if (tries > 0 && /bad json|timeout|429/.test(e && e.message || '')) {
@@ -303,7 +311,7 @@
       if (p.options && p.options.coming_soon) return;
       var raw = p.title.english || '', s = 0;
       [it.title, it.orig].forEach(function (t) { if (!t) return; s = Math.max(s, sim(stripYear(raw), t), sim(raw, t)); });
-      if (s < 0.8) return;
+      if (s < 0.9) return;
       var sc = s, py = postYear(p);
       if (it.year && py) {
         var d = Math.abs(it.year - py);
@@ -314,26 +322,31 @@
     });
     return best;
   }
-  function resolveNet(it) {
+  function resolveNet(it, foreground) {
     var qs2 = [it.title];
     if (it.orig && norm(it.orig) !== norm(it.title) && /[a-z]/i.test(it.orig)) qs2.push(it.orig);
     function go(i) {
       if (i >= qs2.length || !qs2[i]) return null;
-      return N.api.get('search', { query: qs2[i], streamonly: 0, page: 1 }, { bg: true }).then(function (r) { return bestPost((r && r.posts) || [], it) || go(i + 1); });
+      return N.api.get('search', { query: qs2[i], streamonly: 0, page: 1 }, { bg: !foreground }).then(function (r) {
+        var post = bestPost((r && r.posts) || [], it);
+        if (!post) return go(i + 1);
+        if (it.imdb && postImdb(post) === it.imdb) return post;
+        return T.match(post).then(function (m) { return m && m.id === it.id && m.kind === it.kind ? post : go(i + 1); });
+      });
     }
     return go(0);
   }
   var rin = {};
   // it: slim TMDB item {id, kind, title, orig, year}; alive(): optional, false -> skipped (resolves null, uncached)
-  T.resolve = function (it, alive) {
-    var key = 'r2.' + it.kind + it.id;
+  T.resolve = function (it, alive, foreground) {
+    var key = 'r3.' + it.kind + it.id;
     var c = cget(key, function (e) { return e.v ? TTL.res : TTL.miss; });
     if (c) return Promise.resolve(c.v ? Object.assign({}, c.v) : null);
     if (rin[key]) return rin[key].then(function (v) { return v ? Object.assign({}, v) : null; });
     var p = pool(function () {
       if (alive && !alive()) return { skipped: true };
-      return retrying(function () { return resolveNet(it); }, 2).then(function (post) { return { post: post }; });
-    }).then(function (r) {
+      return retrying(function () { return resolveNet(it, foreground); }, 2).then(function (post) { return { post: post }; });
+    }, foreground).then(function (r) {
       delete rin[key];
       if (r.skipped) return null;
       var sp = r.post ? slimPost(r.post) : null; cput(key, sp || 0); return sp;

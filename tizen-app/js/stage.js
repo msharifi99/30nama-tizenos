@@ -25,6 +25,8 @@
     var my = ++token, next = cur === 0 ? 1 : 0, L = layers[next], old = cur >= 0 ? layers[cur] : null;
     clearTimeout(cleanT[next]);
     L.classList.remove('on', 'out'); L.className = 'bd';
+    // Commit the hidden state even when the next backdrop is already cached.
+    void L.offsetWidth;
     var finished = false;
     function show() {
       if (finished || my !== token) return; finished = true;
