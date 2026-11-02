@@ -169,13 +169,53 @@
   lib.list = function (group, page) {
     return api.get('user_list', { action: 'list', group: group, page: page || 1, orderby: 'add_list', order: 'DESC' });
   };
+
+  /* Watch progress. The backend sometimes drops observer reports, so stream.continue_watching can point at an older episode.
+     wpLocal = what we last reported per post, wpServer = what the server last returned; both carry `at`, the time that value
+     last changed (for the server: when we first saw it). Details resumes from whichever is newer. */
+  var wp = N.wp = {}, WP_MAX = 100;
+  function wpRec(c, at) { return { file_id: String(c.file_id), time: Number(c.time) || 0, duration: Number(c.duration) || 0, at: at }; }
+  function wpSame(a, b) { return !!(a && b) && String(a.file_id) === String(b.file_id) && Math.floor(Number(a.time) || 0) === Math.floor(Number(b.time) || 0); }
+  function wpPut(key, postId, rec) {
+    var m = N.store.get(key, {}), ids = Object.keys(m);
+    m[String(postId)] = rec;
+    if (ids.length >= WP_MAX) {
+      ids.sort(function (a, b) { return (m[a].at || 0) - (m[b].at || 0); });
+      for (var i = 0; i <= ids.length - WP_MAX; i++) if (ids[i] !== String(postId)) delete m[ids[i]];
+    }
+    N.store.set(key, m);
+  }
+  wp.observe = function (postId, c) {
+    if (!postId || !c || !c.file_id) return;
+    var cur = wpRec(c, Date.now()), prev = N.store.get('wpServer', {})[String(postId)];
+    if (wpSame(prev, cur)) return;
+    // first sighting of a value that disagrees with our own report: it is the stale one, it must not win just for being new to us
+    var loc = N.store.get('wpLocal', {})[String(postId)];
+    if (!prev && loc && !wpSame(loc, cur)) cur.at = 0;
+    wpPut('wpServer', postId, cur);
+  };
+  // record the server's current value first, so the local record written after it is always the newer one
+  wp.sync = function (p) {
+    return timeout(api.call('stream', { post_id: p.post_id, free_stream: 0 }, { noRetry: true }), 5000, 'stream').then(function (j) {
+      if (j && j.success && j.result) wp.observe(p.post_id, j.result.continue_watching);
+    }).catch(function () {}).then(function () {
+      wpPut('wpLocal', p.post_id, wpRec(p, Date.now()));
+    });
+  };
+  wp.pick = function (postId, c) {
+    wp.observe(postId, c);
+    var loc = N.store.get('wpLocal', {})[String(postId)], srv = N.store.get('wpServer', {})[String(postId)];
+    var r = loc && (!srv || loc.at >= srv.at) ? loc : srv;
+    return r ? { file_id: r.file_id, time: r.time, duration: r.duration } : null;
+  };
+  wp.clear = function () { N.store.del('wpLocal'); N.store.del('wpServer'); };
   N.setSession = function (user) {
     N.session = { token: user.user_session, user: user };
     N.store.set('session', N.session);
   };
   N.logout = function (silent) {
     var p = N.isLoggedIn() ? api.call('logout', {}).catch(function () {}) : Promise.resolve();
-    N.session = null; N.store.del('session'); lib.clear();
+    N.session = null; N.store.del('session'); lib.clear(); wp.clear();
     if (!silent && N.onLogout) N.onLogout();
     return p;
   };

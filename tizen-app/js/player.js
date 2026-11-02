@@ -317,6 +317,7 @@
   P.onEnded = function () { if (P.index + 1 < P.items.length) P.playIndex(P.index + 1); else P.close(); };
 
   /* ---------- progress reporting (observer) ---------- */
+  var wpChain = Promise.resolve(), wpBusy = 0;
   function sameEpisode(p) {
     var item = P.items[P.index], info = item && item.info;
     return !!(info && String(info.file_id) === String(p.file_id));
@@ -347,7 +348,12 @@
     };
     // Details can use this immediately after Back, before a fresh stream response.
     P.last = { post_id: p.post_id, file_id: p.file_id, time: time, duration: duration };
-    sendReport(p, !!final, 0);
+    // N.wp.sync reads the server's value before storing ours. Reports stay in order on one chain; a heartbeat
+    // that finds the previous one still syncing is dropped (the next comes soon), final reports always queue.
+    if (wpBusy && !final) return;
+    wpBusy++;
+    function send() { wpBusy--; sendReport(p, !!final, 0); }
+    wpChain = wpChain.then(function () { return N.wp.sync(p); }).then(send, send);
   };
   P.reportNow = function () { if (P.be && P.be.time() > 1) P.report(true); };
 
