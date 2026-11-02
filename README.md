@@ -13,7 +13,18 @@ A Samsung Tizen TV app: an unofficial client for 30nama.com.
 - Samsung AVPlay player with HLS playback at the highest available quality
 - Persian (fa) and English (en) subtitles
 - Persian UI with full right-to-left support
-- Optional TMDB enrichment: trending rows, cast and crew, reviews, recommendations
+- Optional TMDB enrichment: trending rows, cast and crew, recommendations, and announced episode/season dates
+
+## Remote controls
+
+| While browsing | While playing |
+|---|---|
+| Play/Pause opens or closes the sidebar | Play/Pause pauses or resumes |
+| Arrows move between cards | Left/Right seek; Up opens playback options |
+| OK opens the selected title | Down opens the episode picker for series |
+| Back closes the sidebar or returns | Back dismisses the current panel before exiting playback |
+
+Movies, Series and Anime use the 30nama catalogue directly, with Updated/Popular sorting, a year filter and a short page cache. Playback options include quality, subtitles, audio, restart, and series episode controls. TMDB remains optional on Home and Details.
 
 ## Screenshots
 
@@ -54,10 +65,10 @@ Requires [Tizen Studio](https://developer.tizen.org/development/tizen-studio/dow
 
 ## Optional: TMDB setup
 
-TMDB adds trending rows, cast, reviews and recommendations. It is off by default and the app works fully without it. You can turn it on from the app itself, with any install method (TizenBrew, `.wgt` or built from source):
+TMDB adds trending rows, cast, recommendations, and announced episode/season dates. It is off by default and the app works fully without it. You can turn it on from the app itself, with any install method (TizenBrew, `.wgt` or built from source):
 
 1. Create a free account at themoviedb.org and open Settings, API. Copy your **API Key** (32 characters) or the longer **API Read Access Token**.
-2. On the TV open **Settings > TMDB metadata**. The page also shows a QR code that opens your TMDB API settings on your phone.
+2. On the TV open **Account > TMDB metadata**. The page also shows a QR code that opens your TMDB API settings on your phone.
 3. Enter the key and choose **Check and save**. The 32-character API Key is easy to type with the on-screen keyboard; for the long Read Access Token use **Keyboard** or paste it.
 4. The app checks the key with TMDB and shows **Connected** with the last characters of the key. Home and Details then show the extra content. Use **Remove key** to turn it off again, or **Clear metadata cache** to refresh the data.
 
@@ -75,6 +86,18 @@ node tools/devserver.js 8080
 ```
 
 Then open http://localhost:8080/. The proxy forwards API and HLS requests to avoid CORS. See `tizen-app/README.md` for developer notes and `design/DESIGN.md` for the design spec.
+
+Offline regression checks use mocked catalogue responses and synthetic artwork:
+
+```
+node tests/api-priority.cjs
+node tests/continue-watching.cjs
+node tests/tmdb-matching.cjs
+# With Playwright installed locally and CHROME_PATH pointing to a Chrome/Chromium binary:
+MOTION=1 node tests/tv-ui.cjs
+```
+
+The UI checks cover English and Persian at 1920×1080, including playback controls, scoped episode/season navigation, library controls, and catalogue caching. Set `REDUCED_MOTION=1` to verify reduced-motion behavior.
 
 ## Structure
 

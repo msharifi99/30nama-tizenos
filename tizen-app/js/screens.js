@@ -3,10 +3,13 @@
   var S = N.screens = {};
   var el = N.el, ui = N.ui;
 
+  function isListed(post) { return post && !(post.options && post.options.coming_soon); }
+  function listed(posts) { return (posts || []).filter(isListed); }
+
   function extractPosts(r) {
     if (!r) return [];
     var a = r.posts || r.items || r.list || (r instanceof Array ? r : []);
-    return a.map(function (x) { return x && x.post ? x.post : x; }).filter(function (x) { return x && x.id; });
+    return a.map(function (x) { return x && x.post ? x.post : x; }).filter(function (x) { return x && x.id && isListed(x); });
   }
   function userObj(r) { return (r && r.user_session) ? r : (r && r.user && r.user.user_session ? r.user : null); }
   function errorView(root, e, retry) {
@@ -52,7 +55,7 @@
     // backdrop: first hero cover (guest payload)
     N.getHome().then(function (h) {
       if (dead) return;
-      var ps = (h.hero_header && h.hero_header.posts) || [], p = null;
+      var ps = listed(h.hero_header && h.hero_header.posts), p = null;
       for (var i = 0; i < ps.length; i++) if (ui.coverUrl(ps[i])) { p = ps[i]; break; }
       if (p) N.stage.show(p, { immediate: true, done: function () { N.splashReady(); } }); else N.splashReady();
     }).catch(function () { N.splashReady(); });
@@ -103,6 +106,7 @@
   S.home = function (root, params, restore) {
     var dead = false, st = { mode: 'hero', row: 0 };
     var heroes = [], defs = [], rowEls = [], tracks = [], cards = [], mem = [], tops = [], cwIds = {}, rowObjs = [], shownHero = null;
+    var resumeQueue = [], resumeActive = 0;
     var bb, bbE, dotsEl, playBtn, detBtn, heroUi, rowsEl, noteBtn = null, noteEl = null;
     var curPost = null, curEb = '', curImm = false, shownKey = '', fT = null, bbT = null, flip = false, lastAct = Date.now(), advT = null, rowsTy = null, heroIdx = 0, heroNav = 0, heroT = null, chPrev = null, chNext = null;
     root.classList.add('home');
@@ -118,24 +122,33 @@
         .catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
     }
 
-    function cwNorm(x0, raw) {
-      var c = x0.continue_watching || x0, t = Number(c.time || c.position || 0), d = Number(c.duration || 0);
+    function cwNorm(x0) {
+      x0 = x0 || {};
+      var c = x0.data || x0.continue_watching || x0;
+      var t = Number(c.time || c.position || 0), d = Number(c.duration || 0);
+      var supplied = c.progress !== undefined && c.progress !== null && c.progress !== '' && isFinite(Number(c.progress));
+      var known = supplied || (isFinite(d) && d > 0 && isFinite(t));
+      var fraction = supplied ? Number(c.progress) / 100 : (known ? t / d : 0);
+      fraction = Math.max(0, Math.min(1, fraction));
       var season = c.season || (c.info && c.info.season), ep = c.episode || (c.info && c.info.episode);
       var parts = [];
       if (season && ep) parts.push('S' + season + ' · E' + N.ui.epLabel(ep));
-      if (d && t) parts.push(Math.max(1, Math.round((d - t) / 60)) + ' ' + N.t('minLeft'));
-      return { prog: d ? Math.min(1, t / d) : 0, label: parts.join(' · ') };
+      if (d > 0 && isFinite(d) && isFinite(t)) parts.push(Math.max(0, Math.round((d - t) / 60)) + ' ' + N.t('minLeft'));
+      return { prog: fraction, known: known, label: parts.join(' · ') };
     }
+
 
     function build(h, cwPosts, cwRaw, tmHeroes) {
       root.removeChild(sk);
-      heroes = ((h.hero_header && h.hero_header.posts) || []).slice(0, 8);
-      if (tmHeroes && tmHeroes.length >= 3) heroes = tmHeroes;
+      heroes = listed(h.hero_header && h.hero_header.posts).slice(0, 8);
+      tmHeroes = listed(tmHeroes);
+      if (tmHeroes.length >= 3) heroes = tmHeroes;
       var cwList = (cwRaw && (cwRaw.posts || cwRaw.items || cwRaw.list || (cwRaw instanceof Array ? cwRaw : []))) || [];
+      cwList = cwList.filter(function (x) { return isListed(x && x.post ? x.post : x); });
       cwPosts.forEach(function (p) { cwIds[p.id] = true; });
       if (cwPosts.length) defs.push({ key: 'cw', title: N.t('continueWatching'), kind: 'land', posts: cwPosts, raw: cwList });
       ['new_releases', 'suggested', 'top_10', 'movies', 'series', 'anime'].forEach(function (k) {
-        var ps = h[k] && h[k].posts; if (ps && ps.length) defs.push({ key: k, title: N.t(k), kind: k === 'top_10' ? 'top' : 'poster', posts: k === 'top_10' ? ps.slice(0, 10) : ps });
+        var ps = listed(h[k] && h[k].posts); if (ps.length) defs.push({ key: k, title: N.t(k), kind: k === 'top_10' ? 'top' : 'poster', posts: k === 'top_10' ? ps.slice(0, 10) : ps });
       });
       root.appendChild(ui.clock());
       // billboard
@@ -188,20 +201,49 @@
     function addCard(r, p, i) {
       var d = r.d, c = ui.card(p, d.kind, { rank: i + 1 });
       if (d.kind === 'land') {
-        var n = cwNorm(d.raw[i] || p), lb = n.label || N.title(p);
-        c._mq = ui.mq(lb, 'lbl'); c.appendChild(c._mq);
-        if (n.prog > 0) { var pb = el('div', 'prog'), pi = el('i'); pi.style.transform = 'scaleX(' + n.prog.toFixed(3) + ')'; pb.appendChild(pi); c.appendChild(pb); }
+        var caption = el('div', 'cw-caption'), title = ui.mq(N.title(p), 'cw-title'), detail = ui.mq('', 'cw-info'); c._mq = [title,detail];
+        caption.appendChild(title); caption.appendChild(detail); c.appendChild(caption);
+        var pb = el('div', 'prog'), pi = el('i'); pb.appendChild(pi); c.appendChild(pb);
+        function updateResume(data) {
+          var n = cwNorm(data || {});
+          ui.mqText(detail, n.label || N.t('resume'));
+          pb.classList.toggle('hidden', !n.known);
+          pi.style.transform = 'scaleX(' + n.prog.toFixed(3) + ')';
+        }
+        updateResume(d.raw[i] || p);
+        // Only older catalogue responses need the playback-details fallback.
+        if (!cwNorm(d.raw[i] || p).known) resumeQueue.push(function () {
+          return N.api.call('stream', { post_id: p.id, free_stream: 0 }).then(function (response) {
+            if (dead || !response || !response.success || !response.result) return;
+            var result = response.result, resume = result.continue_watching;
+            if (!resume) return;
+            var items = result.hls || [], match = null;
+            for (var j = 0; j < items.length; j++) {
+              if (resume.file_id != null && String((items[j].info || {}).file_id) === String(resume.file_id)) { match = items[j]; break; }
+            }
+            var data = Object.assign({}, resume, { info: match ? match.info : resume.info });
+            updateResume(data);
+          });
+        });
+        pumpResume();
       }
       c.onfocus2 = function () { onCardFocus(defs.indexOf(d), i); };
       c.onclick = function () { goDetails(p, false); };
       r.tr.appendChild(c); r.cs.push(c); r.ws.push(d.kind === 'land' ? 400 : d.kind === 'top' ? (i + 1 >= 10 ? 420 : 300) : 200);
       if (i < 10) ui.load(c);
     }
+    function pumpResume() {
+      while (!dead && resumeActive < 2 && resumeQueue.length) {
+        var task = resumeQueue.shift(); resumeActive++;
+        task().catch(function () {}).then(function () { resumeActive--; pumpResume(); });
+      }
+    }
     function makeRow(d) {
-      var row = el('div', 'hrow'), hd = el('div', 'hrow-h', d.title), tr = el('div', 'track'), r = { d: d, row: row, tr: tr, cs: [], ws: [] };
-      row.appendChild(hd); row.appendChild(tr);
+      var row = el('div', 'hrow' + (d.key === 'cw' ? ' cw-row' : '')), hd = el('div', 'hrow-h', d.title), tr = el('div', 'track'), r = { d: d, row: row, tr: tr, cs: [], ws: [] };
+      var viewport = el('div', 'home-track-window'); viewport.appendChild(tr);
+      row.appendChild(hd); row.appendChild(viewport);
       d.posts.forEach(function (p, i) { addCard(r, p, i); });
-      ui.layoutTrack(tr, r.cs, r.ws);
+      ui.layoutTrack(tr, r.cs, r.ws, 24);
       return r;
     }
     function pushRow(r) { rowEls.push(r.row); tracks.push(r.tr); cards.push(r.cs); mem.push(0); rowsEl.appendChild(r.row); rowObjs.push(r); }
@@ -225,7 +267,7 @@
         var f = N.tmdb.feed(x[0]); tmFeeds.push(f);
         function cb() {
           if (dead) return;
-          var items = f.items.slice().sort(function (a, b) { return a.i - b.i; }), r = tmRows[x[0]];
+          var items = f.items.filter(function (it) { return isListed(it.post); }).sort(function (a, b) { return a.i - b.i; }), r = tmRows[x[0]];
           if (!r) {
             if (items.length < x[2]) return;
             var d = { key: 'tm_' + x[0], title: N.t(x[1]), kind: 'poster', posts: items.map(function (it) { return it.post; }) };
@@ -238,7 +280,7 @@
           } else {
             var seen = {}; r.d.posts.forEach(function (p) { seen[p.id] = 1; });
             items.forEach(function (it) { if (!seen[it.post.id]) { seen[it.post.id] = 1; r.d.posts.push(it.post); addCard(r, it.post, r.d.posts.length - 1); } });
-            ui.layoutTrack(r.tr, r.cs, r.ws);
+            ui.layoutTrack(r.tr, r.cs, r.ws, 24);
           }
           if (f.done) f.unsubscribe(cb);
         }
@@ -261,8 +303,8 @@
       bbE.meta.innerHTML = ''; bbE.meta.appendChild(ui.meta(p, 2)); bbE.plot.textContent = N.plot(p);
       bbE.title.classList.remove('has-logo'); shownHero = p;
       if (p._logo) {
-        var im = el('img', 'logo'); im.alt = ''; im.decoding = 'async'; bbE.title.appendChild(im); bbE.title.classList.add('has-logo');
-        im.onload = function () { im.classList.add('in'); };
+        var im = el('img', 'logo'); im.alt = ''; im.decoding = 'async'; bbE.title.appendChild(im);
+        im.onload = function () { bbE.title.classList.add('has-logo'); im.classList.add('in'); };
         im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); bbE.title.classList.remove('has-logo'); };
         im.src = p._logo;
       }
@@ -273,9 +315,9 @@
       bb.classList.add('out');
       bbT = setTimeout(function () {
         if (dead) return; fill(p, eb); bb.classList.remove('out', 'in-a', 'in-b'); bb.classList.add(flip ? 'in-a' : 'in-b'); flip = !flip;
-      }, 120);
+      }, 180);
     }
-    function follow() { clearTimeout(fT); if (dead || !curPost) return; if (N.nav.isFast()) return; fT = setTimeout(function () { apply(false); }, 60); }
+    function follow() { clearTimeout(fT); if (dead || !curPost) return; if (N.nav.isFast()) return; fT = setTimeout(function () { apply(false); }, 260); }
     function apply(first) {
       if (dead || !curPost) return;
       var key = curPost.id + '|' + curEb;
@@ -310,7 +352,7 @@
     }
     function rail_open() { return N.rail.open; }
     function setRowsRest() {
-      rowsTy = 860 - (tops[0] || 0); rowsEl.style.transform = 'translateY(' + rowsTy + 'px)';
+      rowsTy = 680 - (tops[0] || 0); rowsEl.style.transform = 'translateY(' + rowsTy + 'px)';
       for (var k = 0; k < rowEls.length; k++) { rowEls[k].classList.remove('past'); rowEls[k].classList.remove('cur'); }
       st.row = 0;
     }
@@ -333,7 +375,7 @@
       }
     }
     function setRow(ri) {
-      var ty = 640 - tops[ri];
+      var ty = 600 - tops[ri];
       if (rowsTy !== ty) { rowsTy = ty; rowsEl.style.transform = 'translateY(' + ty + 'px)'; }
       if (st.row !== ri || !rowEls[ri] || !rowEls[ri].classList.contains('cur')) {
         for (var k = 0; k < rowEls.length; k++) { rowEls[k].classList.toggle('past', k < ri); rowEls[k].classList.toggle('cur', k === ri); }
@@ -342,7 +384,13 @@
     }
     function onCardFocus(ri, i) {
       if (st.mode !== 'browse') { st.mode = 'browse'; root.classList.add('browse'); }
-      mem[ri] = i; setRow(ri); ui.slideTo(tracks[ri], cards[ri][i]._x); windowRow(ri, i);
+      mem[ri] = i; setRow(ri);
+      for (var j = 0; j < cards[ri].length; j++) {
+        cards[ri][j].style.setProperty('--home-nudge', ((j < i ? -24 : j > i ? 24 : 0) * (N.isRtl() ? -1 : 1)) + 'px');
+      }
+      // Keep one selection anchor: the incoming and outgoing cards travel together.
+      ui.slideTo(tracks[ri], cards[ri][i]._x);
+      windowRow(ri, i);
       var p = cards[ri][i]._post; curPost = p; curEb = eyebrowFor(p, defs[ri].key, i + 1);
       follow();
     }
@@ -437,17 +485,20 @@
       var tmOn = N.tmdb.enabled(), dpage = el('div', 'd-page'), col = el('div', 'det-col');
       if (tmOn) root.classList.add('tm');
       var eb = el('div', 'd-eyebrow d-fade', ui.typeLabel(post, true));
-      if (po.persian_subtitle) eb.appendChild(el('em', '', N.t('persianSub')));
       col.appendChild(eb);
       var titleEl = el('div', 'd-title', N.title(post)); col.appendChild(titleEl);
       if (tmOn) { titleEl.textContent = ''; titleEl.appendChild(el('span', 'tt', N.title(post))); }
       var o = other(post); if (o) col.appendChild(el('div', 'd-alt', o));
       var tagEl = null; if (tmOn) { tagEl = el('div', 'd-tag'); tagEl.dir = 'auto'; col.appendChild(tagEl); }
-      var meta = ui.meta(post, 3, true); meta.classList.add('d-meta'); col.appendChild(meta);
+      var meta = ui.meta(post, 3, {details:true,allScores:true}); meta.classList.add('d-meta'); col.appendChild(meta);
       var plot = el('div', 'd-plot d-fade', N.plot(post)); col.appendChild(plot);
+      var facts = el('div', 'd-facts d-fade'); col.appendChild(facts);
+      var streamFacts = [];
+      function paintFacts(extra) {
+        facts.innerHTML = '';
+        streamFacts.concat(extra || []).forEach(function (f) { var bit = el('div', 'd-fact'); bit.appendChild(el('span', 'd-fact-label', f[0])); bit.appendChild(el('span', 'd-fact-value', f[1])); facts.appendChild(bit); });
+      }
       var btns = el('div', 'd-btns d-fade'); col.appendChild(btns);
-      var castEl = null;
-      if (post.cast && post.cast.length) { castEl = el('div', 'd-cast d-fade', N.t('cast') + ': ' + post.cast.slice(0, 6).map(function (x) { return x.name; }).join(', ')); col.appendChild(castEl); }
       dpage.appendChild(col); root.appendChild(dpage);
 
       var startIdx = 0;
@@ -457,6 +508,15 @@
         backToSheet = epsOpen; lastFocus = epsOpen ? null : N.nav.cur; if (epsOpen) { epMem[curS] = i; clearTimeout(swT); swT = null; hideEps(); }
         N.player.start(post, items, i, withResume ? resume : null);
       }
+      var selectedFile = items[startIdx] && items[startIdx].file || {};
+      if (selectedFile.m3u8 instanceof Array) {
+        var qualities = selectedFile.m3u8.map(function (q) { return String(q.label || ''); }).filter(function (q) { return /\d/.test(q); });
+        qualities.sort(function (a,b) { return (parseInt(b.replace(/\D/g,''),10)||0) - (parseInt(a.replace(/\D/g,''),10)||0); });
+        if (qualities.length) streamFacts.push([N.t('quality'), qualities[0]]);
+      }
+      var subLanguages = selectedFile.subtitle && Object.keys(selectedFile.subtitle).filter(function (k) { return (k === 'en' || k === 'fa') && selectedFile.subtitle[k]; });
+      if (subLanguages && subLanguages.length) streamFacts.push([N.t('subtitles'), subLanguages.map(function (k) { return N.t(k === 'en' ? 'english' : 'persian'); }).join(', ')]);
+      paintFacts();
       function playLabel() {
         var info0 = items[startIdx] && items[startIdx].info || {};
         return resume ? N.t('resume') + (isSeries ? ' S' + (info0.season || 1) + '·E' + ui.epLabel(info0.episode, startIdx + 1) : '') : N.t('play');
@@ -511,7 +571,7 @@
         map[s].forEach(function (idx) {
           var it = items[idx], prog = 0;
           if (resume && it.info && String(it.info.file_id) === String(resume.file_id) && Number(resume.duration) > 0) prog = Number(resume.time) / Number(resume.duration);
-          var t = ui.epTile(it, idx, { progress: prog });
+          var t = ui.epTile(it, idx, { progress: prog, post: post });
           t.onclick = function () { play(idx, true); };
           t.onfocus2 = function () { ui.slideTo(track, t._x); epMem[s] = idx; };
           t.onnav = function (dir) {
@@ -564,22 +624,21 @@
       function heroFocus() { setX(false); }
       playB.onfocus2 = heroFocus; if (epB) epB.onfocus2 = heroFocus;
       current.back = function () {
-        if (rvOpen) { closeReview(); return true; }
         if (epsOpen) { closeEps(); return true; }
         if (xOn) { N.nav.focus(playB, true); heroFocus(); return true; }
         return false;
       };
-      current.closeRv = function () { if (rvOpen) { N.nav.popScope(); rvOpen = null; } };
 
       /* ---------- TMDB extras (progressive; absent without a token) ---------- */
-      var xEl = null, xRows = [], xOn = false, rvOpen = null;
+      var xEl = null, xRows = [], xOn = false;
       function setX(on) {
         if (on === xOn) return; xOn = on; root.classList.toggle('xs', on); N.stage.dim(on ? 0.55 : 0);
         if (!on) { dpage._ty = 0; dpage.style.transform = ''; for (var k = 0; k < xRows.length; k++) { xRows[k].tr.style.transition = 'none'; xRows[k].tr._s = null; ui.slideTo(xRows[k].tr, 0); xRows[k].mem = 0; xRows[k].el.classList.remove('cur'); void xRows[k].tr.offsetWidth; xRows[k].tr.style.transition = ''; } }
       }
       function xFirst() { var r = xRows[0]; return r ? r.cs[Math.min(r.mem, r.cs.length - 1)] : null; }
+      function positionExtras() { if (xEl) xEl.style.top = (col.offsetTop + col.offsetHeight + 32) + 'px'; }
       function fmtDate(iso) {
-        try { var d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString(N.lang === 'fa' ? 'fa-IR' : 'en-US', { month: 'short', day: 'numeric' }); } catch (e) { return iso; }
+        try { var d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString(N.lang === 'fa' ? 'fa-IR' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric' }); } catch (e) { return iso; }
       }
       function statusText(s) {
         if (N.lang !== 'fa') return s;
@@ -594,7 +653,7 @@
       function xCard(r, c, w) {
         var i = r.cs.length;
         c.onfocus2 = function () { r.mem = i; ui.slideTo(r.tr, c._x); setX(true); ui.vscroll(dpage, r.el, 250); for (var k = 0; k < xRows.length; k++) xRows[k].el.classList.toggle('cur', xRows[k] === r); };
-        r.tr.appendChild(c); r.cs.push(c); r.ws.push(w); ui.layoutTrack(r.tr, r.cs, r.ws);
+        r.tr.appendChild(c); r.cs.push(c); r.ws.push(w); ui.layoutTrack(r.tr, r.cs, r.ws, 24);
       }
       function initials(n) { var p = String(n || '').split(/\s+/); return ((p[0] || '').charAt(0) + (p.length > 1 ? p[p.length - 1].charAt(0) : '')).toUpperCase(); }
       function faceCard(p, role) {
@@ -604,37 +663,6 @@
         c._mq = [ui.mq(p.n, 'fnm'), ui.mq(role || '', 'frl')];
         c.appendChild(ph); c.appendChild(c._mq[0]); c.appendChild(c._mq[1]);
         return c;
-      }
-      function revCard(rv) {
-        var c = el('div', 'card f k-rev'), h = el('div', 'rvh');
-        c._mq = ui.mq(rv.a || '-', 'rva'); h.appendChild(c._mq);
-        if (rv.r) h.appendChild(el('span', 'rvr tab', '★ ' + rv.r));
-        c.appendChild(h); c.appendChild(el('div', 'rvt', rv.t.replace(/\s+/g, ' ')));
-        c.onclick = function () { openReview(rv); };
-        return c;
-      }
-      function openReview(rv) {
-        if (rvOpen) return;
-        var m = el('div', 'rv-sheet'), box = el('div', 'rv-box'), hd = el('div', 'rv-h'), bodyW = el('div', 'rv-body'), txt = el('div', 'rv-text', rv.t), off = 0;
-        txt.dir = 'auto';
-        hd.appendChild(el('span', 'rva', rv.a || '-')); if (rv.r) hd.appendChild(el('span', 'rvr tab', '★ ' + rv.r)); if (rv.d) hd.appendChild(el('span', 'rvd tab', rv.d));
-        bodyW.appendChild(txt); box.appendChild(hd); box.appendChild(bodyW);
-        var cb = ui.btn(N.t('close'), function () { closeReview(); }, 'primary');
-        cb.onnav = function (dir) {
-          if (dir === 'up' || dir === 'down') {
-            var mx = Math.max(0, txt.offsetHeight - bodyW.offsetHeight); off = Math.max(0, Math.min(mx, off + (dir === 'down' ? 200 : -200)));
-            txt.style.transform = 'translateY(' + (-off) + 'px)'; return true;
-          }
-          return true;
-        };
-        var ft = el('div', 'rv-f'); ft.appendChild(cb); ft.appendChild(el('span', 'rv-hint', N.t('scrollHint'))); box.appendChild(ft);
-        m.appendChild(box); root.appendChild(m); rvOpen = { el: m, prev: N.nav.cur };
-        N.nav.pushScope(m); void m.offsetWidth; m.classList.add('show'); N.nav.focus(cb, true);
-      }
-      function closeReview() {
-        if (!rvOpen) return; var o = rvOpen; rvOpen = null; N.nav.popScope(); o.el.classList.remove('show');
-        setTimeout(function () { if (o.el.parentNode) o.el.parentNode.removeChild(o.el); }, 260);
-        if (o.prev && o.prev.offsetWidth > 0) N.nav.focus(o.prev, true);
       }
       function xNav(dir, cur) {
         var ri = -1, i = -1, k;
@@ -650,21 +678,24 @@
         if (tagEl && d.tagline) { tagEl.textContent = d.tagline; tagEl.classList.add('in'); }
         if (d.logo) {
           var li = el('img', 'logo'); li.alt = ''; li.decoding = 'async';
-          li.onload = function () { if (dead) return; titleEl.appendChild(li); void li.offsetWidth; li.classList.add('in'); titleEl.classList.add('has-logo'); };
+          li.onload = function () { if (dead) return; titleEl.appendChild(li); void li.offsetWidth; li.classList.add('in'); titleEl.classList.add('has-logo'); positionExtras(); };
           li.src = N.tmdb.img(d.logo, 'w500');
         }
-        if (d.votes >= 5 && d.rating) { meta.appendChild(el('span', 'tmdb tab fadein', 'TMDB ' + d.rating.toFixed(1))); }
-        if (d.next && isSeries) {
-          eb.appendChild(el('span', 'd-next fadein', (d.next.e === 1 ? N.t('newSeason') + (d.next.s > 1 ? ' ' + d.next.s : '') : N.t('nextEp') + ' · ⁦S' + d.next.s + 'E' + d.next.e + '⁩') + ' · ' + fmtDate(d.next.d)));
+        if (isSeries && (d.next || d.nextSeason)) {
+          var schedule = el('div', 'd-schedule d-fade');
+          // Suppress expired dates even if the screen's metadata came from cache.
+          var now = new Date(), today = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+          if (d.next && d.next.d >= today && !(d.next.e === 1 && d.nextSeason && d.nextSeason.s === d.next.s)) {
+            schedule.appendChild(el('span', 'd-next fadein', N.t('nextEp') + ' · ⁦S' + d.next.s + 'E' + d.next.e + '⁩ · ' + fmtDate(d.next.d)));
+          }
+          if (d.nextSeason && d.nextSeason.d >= today) schedule.appendChild(el('span', 'd-next fadein', N.t('nextSeason') + ' ' + d.nextSeason.s + ' · ' + fmtDate(d.nextSeason.d)));
+          if (schedule.firstChild) col.insertBefore(schedule, plot);
         }
         var bits = [];
-        if (isSeries && d.status) bits.push(statusText(d.status));
-        if (!(post.info && post.info.time && post.info.time.default) && d.runtime) bits.push(ui.duration(d.runtime));
-        if (d.nets.length) bits.push(d.nets.join(', '));
-        if (bits.length && d.cast.length) {
-          if (!castEl) { castEl = el('div', 'd-cast d-fade'); col.appendChild(castEl); }
-          castEl.textContent = bits.join(' · '); castEl.classList.add('fadein');
-        }
+        if (isSeries && d.status) bits.push([N.t('titleStatus'), statusText(d.status)]);
+        if (!(post.info && post.info.time && post.info.time.default) && d.runtime) bits.push([N.t('runtime'), ui.duration(d.runtime)]);
+        if (d.nets.length) bits.push([N.t(isSeries ? 'network' : 'studio'), d.nets.join(', ')]);
+        paintFacts(bits);
         if (d.bd) {
           var tb = N.tmdb.img(d.bd, 'w1280'), cv = ui.coverUrl(post);
           if (!cv) { post._bd = tb; N.stage.show(post, { immediate: true }); }
@@ -677,7 +708,7 @@
         xEl = el('div', 'd-x'); xEl.appendChild(el('div', 'd-x-bg')); xEl.onnav = xNav; dpage.appendChild(xEl);
         if (d.cast.length) { var rc2 = xRowAdd('cast', N.t('cast'), 364); d.cast.forEach(function (p) { xCard(rc2, faceCard(p, p.c), 180); }); }
         if (d.crew.length) { var rr = xRowAdd('crew', N.t('crew'), 364); d.crew.forEach(function (p) { xCard(rr, faceCard(p, N.t(p.j)), 180); }); }
-        if (d.reviews.length) { var rv = xRowAdd('rev', N.t('reviews'), 388); d.reviews.forEach(function (x) { xCard(rv, revCard(x), 520); }); }
+        positionExtras();
         if (d.recs.length) {
           var recRow = null, got = {}, n = 0, queued = [];
           var addRec = function (p) {
@@ -685,7 +716,7 @@
           };
           d.recs.slice(0, 20).forEach(function (it) {
             N.tmdb.resolve(it, function () { return !dead && n < 12; }).then(function (p) {
-              if (dead || !p || p.id === post.id || got[p.id] || n >= 12) return;
+              if (dead || !isListed(p) || p.id === post.id || got[p.id] || n >= 12) return;
               got[p.id] = 1; n++;
               if (!recRow) {
                 queued.push(p); if (queued.length < 3) return;
@@ -718,7 +749,7 @@
         if (items.length) play(startIdx, true); else N.toast(N.isLoggedIn() ? N.t('noStream') : N.t('playLogin'), 3500);
       }
     }
-    var current = { destroy: function () { dead = true; clearTimeout(swT); if (sheetScope) { N.nav.popScope(); sheetScope = null; } if (current.closeRv) current.closeRv(); } };
+    var current = { destroy: function () { dead = true; clearTimeout(swT); if (sheetScope) { N.nav.popScope(); sheetScope = null; } } };
     load();
     return current;
   };
@@ -810,6 +841,7 @@
     document.addEventListener('keydown', onKeyDown);
 
     function show(posts, header, msg) {
+      posts = listed(posts);
       clearTimeout(swT); rg.classList.add('sw');
       swT = setTimeout(function () {
         if (dead) return;
@@ -842,14 +874,14 @@
     }
     function popular(msg, generation) {
       var my = generation === undefined ? seq : generation;
-      N.getHome().then(function (h) { if (dead || my !== seq) return; var ps = (h.suggested && h.suggested.posts) || (h.movies && h.movies.posts) || []; show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
+      N.getHome().then(function (h) { if (dead || my !== seq) return; var ps = listed((h.suggested && h.suggested.posts) || (h.movies && h.movies.posts)); show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
     }
     function run() {
       var qq = q.trim(); var my = ++seq;
       if (!qq) { popular('', my); return; }
       N.api.get('search', { query: qq, streamonly: 0, page: 1 }).then(function (r) {
         if (dead || my !== seq) return;
-        if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”', my); return; }
+        if (!listed(r.posts).length) { popular(N.t('nothingFor') + ' “' + qq + '”', my); return; }
         show(r.posts, N.t('topResults'), '');
       }).catch(function (e) { if (!dead && my === seq) popular(N.t('error') + '. ' + N.t('tryAgain'), my); });
     }
@@ -889,7 +921,6 @@
     return { destroy: function () { dead = true; } };
   };
 
-  var SORTS = [['date', 'newest'], ['favorite', 'popular'], ['update', 'updated']];
   function pagedGrid(root, o, restore) {
     var dead = false, page = 1, pages = 1, loading = false, total = 0, cells = [], skels = [], tab = (restore && restore.tab) || o.tabs[0][0], wantIdx = restore && restore.idx || 0, restoring = !!(restore && restore.idx > 0), gen = 0, COLS = 7;
     root.classList.add('archive', 'gridpage'); N.stage.dim(0.72);
@@ -951,13 +982,141 @@
       focusState: function () { for (var i = 0; i < cells.length; i++) if (cells[i].card === N.nav.cur) return { idx: i, tab: tab }; return { tab: tab }; }
     };
   }
+  // Brief, bounded in-memory catalogue cache, isolated by session and filters.
+  var archivePages = {}, archivePageKeys = [], ARCHIVE_TTL = 90000;
+  function rememberArchive(key, source, result) {
+    archivePages[key] = {time:Date.now(),session:N.session,source:source,result:result};
+    var i = archivePageKeys.indexOf(key); if (i >= 0) archivePageKeys.splice(i, 1);
+    archivePageKeys.push(key);
+    while (archivePageKeys.length > 24) delete archivePages[archivePageKeys.shift()];
+  }
+  var SORTS = [['update', 'updated'], ['favorite', 'popular']];
   function archiveList(root, params, restore) {
-    return pagedGrid(root, {
-      title: function () { return params.name || params.slug; },
-      tabs: SORTS,
-      fetch: function (sort, page) { return N.api.get('archive', { slugs: params.slug, streamonly: 1, page: page, orderby: sort, order: 'desc' }); },
-      retry: function () { N.go('archive', params, { replace: true }); }
-    }, restore && { idx: restore.idx, tab: restore.sort });
+    var availableSorts = SORTS.slice();
+    var sortKey = 'archiveSort.' + params.slug, yearKey = 'archiveYear.' + params.slug;
+    var year = String((restore && restore.year) || N.store.get(yearKey, '')), yearMenu = null;
+    if (!/^\d{4}$/.test(year)) year = '';
+    var dead = false, page = 1, pages = 1, loading = false, cells = [], skels = [], sort = (restore && restore.sort) || N.store.get(sortKey, 'update'), wantIdx = restore && restore.idx || 0, restoring = !!(restore && restore.idx > 0), gen = 0, COLS = 7;
+    if (sort === 'year' || sort === 'date' || sort === 'digital') { sort = 'update'; N.store.set(sortKey, sort); }
+    if (!availableSorts.some(function (s) { return s[0] === sort; })) sort = 'update';
+    root.classList.add('archive', 'gridpage'); N.stage.dim(0.72);
+    var box = el('div', 'arch'); root.appendChild(box);
+    var head = el('div', 'head ah'); head.textContent = params.name || params.slug; box.appendChild(head);
+    var sorts = el('div', 'sorts head'); box.appendChild(sorts);
+    var filters = el('div', 'archive-filters head'); box.appendChild(filters);
+    var yearButton = ui.pill('', openYears, false); yearButton.classList.add('year-filter'); sorts.appendChild(yearButton);
+    yearButton.setAttribute('aria-haspopup', 'listbox');
+    yearButton.onnav = function (dir) { if (dir === 'down') return cells[0] ? cells[0].card : true; if (dir === 'up') return true; return false; };
+    function closeYears(focus) {
+      if (!yearMenu) return false; N.nav.popScope(); root.removeChild(yearMenu); yearMenu = null; yearButton.setAttribute('aria-expanded', 'false');
+      if (focus) N.nav.focus(yearButton, true); return true;
+    }
+    function openYears() {
+      if (yearMenu) return;
+      yearMenu = el('div', 'year-menu'); yearMenu.style.left = Math.min(1500, sorts.offsetLeft + yearButton.offsetLeft) + 'px'; yearMenu.style.right = 'auto'; yearMenu.setAttribute('role', 'listbox'); root.appendChild(yearMenu);
+      var values = ['']; for (var y = new Date().getFullYear(); y >= 1888; y--) values.push(String(y));
+      var buttons = values.map(function (v, i) {
+        var b = ui.pill(v || N.t('allYears'), function () {
+          closeYears(true); if (year === v) return; year = v; N.store.set(yearKey, year); paint(); reset();
+        }, year === v);
+        b.setAttribute('role', 'option'); b.setAttribute('aria-selected', String(year === v));
+        b.onnav = function (dir) { if (dir === 'up') return buttons[Math.max(0, i - 1)]; if (dir === 'down') return buttons[Math.min(buttons.length - 1, i + 1)]; return true; };
+        yearMenu.appendChild(b); return b;
+      });
+      yearMenu.reveal = function (e) { var top = e.offsetTop, bottom = top + e.offsetHeight; if (top < yearMenu.scrollTop) yearMenu.scrollTop = top; else if (bottom > yearMenu.scrollTop + yearMenu.clientHeight) yearMenu.scrollTop = bottom - yearMenu.clientHeight; };
+      yearButton.setAttribute('aria-expanded', 'true'); N.nav.pushScope(yearMenu); N.nav.focus(buttons[Math.max(0, values.indexOf(year))]);
+    }
+    var grid = el('div', 'ggrid'); box.appendChild(grid);
+    box.reveal = function (e) { var ty = ui.vscroll(box, e._cell || e, 260); box.classList.toggle('scrolled', ty < 0); };
+    availableSorts.forEach(function (s) {
+      var p = ui.pill(N.t(s[1]), function () { if (sort === s[0]) return; sort = s[0]; N.store.set(sortKey, sort); paint(); reset(); }, sort === s[0]); p._k = s[0]; sorts.appendChild(p);
+      p.onnav = function (dir) { if (dir === 'down') return cells[0] ? cells[0].card : true; if (dir === 'up') return true; return false; };
+    });
+    var older = ui.pill(N.t('olderReleases'), function () { if (loading || page >= pages) return; page++; load(); }, false);
+    older.classList.add('archive-more'); older.style.display = 'none'; filters.appendChild(older);
+    older.onnav = function (dir) { if (dir === 'down') return cells.length ? cells[cells.length - 1].card : true; if (dir === 'up') return true; return false; };
+    function paint() {
+      yearButton.textContent = N.t('year') + ': ' + (year || N.t('allYears')) + ' ▾';
+      older.textContent = N.t('loadMore');
+      for (var i = 0; i < sorts.children.length; i++) sorts.children[i].classList.toggle('cur', sorts.children[i]._k === sort);
+    }
+    paint();
+    function addSkels(n) { for (var i = 0; i < n; i++) { var c = el('div', 'gcell'); c.appendChild(ui.skelCard('grid')); skels.push(c); grid.appendChild(c); } }
+    function clearSkels() { skels.forEach(function (s) { if (s.parentNode) s.parentNode.removeChild(s); }); skels = []; }
+    function reset() {
+      gen++; loading = false; page = 1; pages = 1; older.style.display = 'none'; cells = []; grid.innerHTML = ''; skels = []; box.style.transition = 'none'; box._ty = null; box.style.transform = ''; void box.offsetWidth; box.style.transition = ''; box.classList.remove('scrolled');
+      wantIdx = 0; restoring = false; load();
+    }
+    function appendPosts(posts) {
+      var first = cells.length === 0;
+      posts = listed(posts).filter(function (p) { return !year || String(p.info && p.info.year) === year; });
+      posts.forEach(function (p) {
+          if (cells.some(function (it) { return it.card._post.id === p.id; })) return;
+          var cell = ui.cell(p), c = cell.card;
+          c.onclick = function () { N.go('details', { id: p.id }); };
+          c.onnav = function (dir) {
+            var idx = cells.indexOf(cell);
+            if (dir === 'down' && older.style.display !== 'none' && Math.floor(idx / COLS) === Math.floor((cells.length - 1) / COLS)) return older;
+            return ui.gridNav(cells.map(function (it) { return it.card; }), idx, COLS, dir, function (edge) {
+              if (edge === 'up') return sorts.firstChild;
+              if ((edge === 'left' || edge === 'right') && ui.step(edge) < 0) N.rail.enter();
+              return true;
+            });
+          };
+          c.onfocus2 = function () {
+            var idx = cells.indexOf(cell);
+            var row = Math.floor(idx / COLS), rows = Math.ceil(cells.length / COLS);
+            for (var k = Math.max(0, (row - 1) * COLS); k < Math.min(cells.length, (row + 3) * COLS); k++) ui.load(cells[k].card);
+            if (row >= rows - 2 && page < pages && !loading) { page++; load(); }
+          };
+          cells.push(cell); grid.appendChild(cell);
+        });
+      for (var k = 0; k < Math.min(cells.length, 3 * COLS); k++) ui.load(cells[k].card);
+      if (first && cells.length && !restoring && !yearMenu) N.nav.focus(cells[0].card, true);
+    }
+    function load(scanned) {
+      scanned = scanned || 0;
+      if (loading) return; loading = true; var my = gen; addSkels(page === 1 ? 14 : 7);
+      older.disabled = true;
+      var cacheKey = [N.lang, params.slug, sort, year, page].join('|');
+      var source = N.api.get, requestSession = N.session;
+      var cached = archivePages[cacheKey];
+      var hit = cached && cached.session === N.session && cached.source === source && Date.now() - cached.time < ARCHIVE_TTL;
+      var request = hit ? Promise.resolve(cached.result) :
+        N.api.get('archive', { slugs: params.slug, streamonly: 1, page: page, orderby: sort, order: 'desc' });
+      request.then(function (r) {
+        if (dead || my !== gen) return;
+        if (!hit && N.session === requestSession && r && r.posts) rememberArchive(cacheKey, source, r);
+        loading = false; clearSkels(); older.disabled = false;
+        var posts = listed(r.posts).filter(function (p) { return !year || String(p.info && p.info.year) === year; });
+        older.style.display = !posts.length && page < r.pages ? '' : 'none';
+        var empty = grid.querySelector('.digital-empty'); if (empty) grid.removeChild(empty);
+        var first = cells.length === 0;
+        pages = r.pages || 1;
+        if (!posts.length && page < pages && scanned < 2) { page++; load(scanned + 1); return; }
+        appendPosts(posts);
+        if (!posts.length) {
+          var message = el('div', 'digital-empty msg', N.t('noMatches')); grid.appendChild(message);
+          if (page < pages) N.nav.focus(older, true);
+        }
+        for (var k = 0; k < Math.min(cells.length, 3 * COLS); k++) ui.load(cells[k].card);
+        if (first && !cells.length && !restoring && !yearMenu) N.nav.focus(cells[0] ? cells[0].card : (older.style.display !== 'none' ? older : sorts.firstChild), true);
+        if (restoring) {
+          if (wantIdx < cells.length) { restoring = false; instant(root, function () { N.nav.focus(cells[wantIdx].card); }); }
+          else if (page < pages) { page++; load(); } else { restoring = false; N.nav.focus(cells[0] ? cells[0].card : sorts.firstChild, true); }
+        }
+        if (!restoring && !loading && page < pages && N.nav.cur && grid.contains(N.nav.cur)) {
+          var at = cells.map(function (it) { return it.card; }).indexOf(N.nav.cur);
+          if (at >= 0 && Math.floor(at / COLS) >= Math.ceil(cells.length / COLS) - 2) { page++; load(); }
+        }
+      }).catch(function (e) { if (!dead && my === gen) { loading = false; clearSkels(); older.disabled = false; if (!cells.length) { grid.innerHTML = ''; var notice = el('div', 'archive-error msg', N.t('error') + '. ' + N.t('tryAgain')); grid.appendChild(notice); var retry = ui.pill(N.t('retry'), function () { if (notice.parentNode) grid.removeChild(notice); reset(); }, false); notice.appendChild(retry); N.nav.focus(sorts.firstChild, true); } } });
+    }
+    load();
+    return {
+      destroy: function () { dead = true; closeYears(false); },
+      back: function () { return closeYears(true); },
+      focusState: function () { for (var i = 0; i < cells.length; i++) if (cells[i].card === N.nav.cur) return { idx: i, sort: sort, year: year }; return { sort: sort, year: year }; }
+    };
   }
 
   S.mylist = function (root, params, restore) {
@@ -981,13 +1140,36 @@
   S.settings = function (root, params, restore) {
     var dead = false, sec = (restore && restore.sec) || (params && params.section) || 'account', swT = null, paneOff = null, secs = ['account', 'language', 'playback', 'display', 'tmdb', 'takeover', 'about'];
     root.classList.add('set'); N.stage.dim(0.72);
-    root.appendChild(el('div', 'h-xl t', N.t('settings')));
+    root.appendChild(el('div', 'h-xl t', N.t('account')));
     var list = el('div', 'slist'), pane = el('div', 'spane'); root.appendChild(list); root.appendChild(pane);
     var rows = {};
-    function fmtExpire(v) {
-      if (v === undefined || v === null || v === '') return N.t('unknown');
-      if (typeof v === 'number' || /^\d{9,13}$/.test(String(v))) { var n = Number(v); if (n < 1e11) n *= 1000; return new Date(n).toISOString().slice(0, 10); }
-      return String(v);
+    function fmtExpire(value) {
+      function format(v, depth) {
+        if (v === undefined || v === null || v === '' || depth > 4) return null;
+        if (typeof v === 'object') {
+          var keys = ['expires_at', 'expire_at', 'expiry_date', 'expire_date', 'expiration_date', 'date', 'timestamp', 'unix', 'gregorian', 'value', 'raw'];
+          for (var i = 0; i < keys.length; i++) {
+            if (v[keys[i]] !== undefined) { var found = format(v[keys[i]], depth + 1); if (found) return found; }
+          }
+          // Some API versions wrap the date under a localized or nested key.
+          var names = Object.keys(v);
+          for (var j = 0; j < names.length; j++) {
+            var x = v[names[j]];
+            if (x && (typeof x === 'object' || (typeof x === 'string' && /^\d{4}[-/]\d{2}[-/]\d{2}/.test(x)))) {
+              var date = format(x, depth + 1); if (date) return date;
+            }
+          }
+          return null;
+        }
+        if (typeof v === 'number' || /^\d{9,13}$/.test(String(v))) {
+          var n = Number(v); if (!isFinite(n)) return null; if (n < 1e11) n *= 1000;
+          var d = new Date(n); return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+        }
+        if (typeof v !== 'string') return null;
+        var m = /^(\d{4}[-/]\d{2}[-/]\d{2})/.exec(v);
+        return m ? m[1] : v;
+      }
+      return format(value, 0) || N.t('unknown');
     }
     // option row. opts: values [{v,label}], get(), set(v)
     function opt(label, values, get, set) {
@@ -1034,7 +1216,7 @@
       },
       display: function (p) {
         p.appendChild(opt(N.t('reduce'), onOff.slice().reverse().map(function (x) { return x; }), function () { return N.store.get('calm', false); }, function (v) {
-          N.store.set('calm', v); document.body.classList.toggle('calm', v);
+          N.store.set('calm', v); document.body.classList.toggle('calm', v || window.matchMedia('(prefers-reduced-motion: reduce)').matches);
         }));
       },
       takeover: function (p) {

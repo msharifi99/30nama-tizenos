@@ -478,44 +478,82 @@
     if (force) unState = null; else if (unState) unState.dismissed = true;
   };
 
-  /* ---------- menu (audio / subs) : end-side sheet ---------- */
+  /* ---------- playback options below the timeline ---------- */
   P.openMenu = function () {
     var m = $('player-menu'); m.innerHTML = ''; var item = P.items[P.index];
-    var w = N.el('div', 'pm-in'); m.appendChild(w); // clipped by the sheet; scrolled with translateY as focus moves (same as the other vertical panes)
-    w.reveal = function (e) { ui.vscroll(w, e, 220); };
     function section(title, opts, onPick) {
-      if (title) w.appendChild(N.el('div', 'h', title));
-      opts.forEach(function (o) {
-        var b = N.el('div', 'opt f fl' + (o.sel ? ' sel' : '')); b.appendChild(N.ui.icon('check')); b.appendChild(N.el('span', '', o.label));
-        b.onclick = function () { onPick(o); P.closeMenu(); };
-        w.appendChild(b);
-      });
+      var button = N.el('div', 'opt f fl category');
+      button.appendChild(N.ui.icon(title === N.t('audio') ? 'mic' : 'list'));
+      var text = N.el('div', 'category-text'); text.appendChild(N.el('span', 'category-title', title));
+      var selected = opts.filter(function (o) { return o.sel; })[0];
+      if (selected) { var summary=ui.mq(selected.label,'category-value'); text.appendChild(summary); button._mq=summary; }
+      button.appendChild(text); m.appendChild(button);
+      button.onclick = function () {
+        P.closeChoices();
+        var panel = N.el('div', 'player-choices scroll');
+        panel.appendChild(N.el('div', 'h', title));
+        opts.forEach(function (o) {
+          var choice = N.el('div', 'opt f fl' + (o.sel ? ' sel' : ''));
+          choice.appendChild(N.ui.icon('check')); var label=ui.mq(o.label,'choice-label');choice.appendChild(label);choice._mq=label;
+          choice.onclick = function () { onPick(o); P.closeMenu(); };
+          panel.appendChild(choice);
+        });
+        if (title === N.t('subtitles') && P.subLang !== 'off') {
+          var sync = N.el('div', 'opt f fl sync'), value = N.el('span', 'v');
+          function paintSync() { var v=P.subOffV || 0; value.textContent='‹ '+(v>0?'+':'')+v.toFixed(1)+'s ›'; }
+          sync.appendChild(N.el('span', '', N.t('subSync'))); sync.appendChild(value); paintSync();
+          sync.onnav=function(dir){if(dir==='left'||dir==='right'){P.setSubOff((P.subOffV||0)+0.5*ui.step(dir));paintSync();return true;}return false;};
+          sync.onclick=function(){P.setSubOff(0);paintSync();};panel.appendChild(sync);
+        }
+        m.appendChild(panel);
+        var mr = m.getBoundingClientRect(), br = button.getBoundingClientRect();
+        var x = N.isRtl() ? br.right - mr.left - panel.offsetWidth : br.left - mr.left;
+        panel.style.left = Math.max(0, Math.min(m.clientWidth - panel.offsetWidth, x)) + 'px'; panel.style.right = 'auto';
+        var choices = panel.querySelectorAll('.opt');
+        Array.prototype.forEach.call(choices, function (choice, i) {
+          if (choice.onnav) return;
+          choice.onnav = function (dir) {
+            if (dir === 'up') return choices[i - 1] || true;
+            if (dir === 'down') return choices[i + 1] || true;
+            return true;
+          };
+        });
+        P.choices = {panel:panel,button:button};
+        N.nav.pushScope(panel); N.nav.focus(panel.querySelector('.sel') || panel.querySelector('.opt'));
+      };
     }
-    var audio = P.be.audioTracks();
-    if (audio.length) section(N.t('audio'), audio, function (o) { P.be.setAudio(o.id); });
-    var q = P.qualities(item);
-    if (q.length > 1) {
-      q.forEach(function (x) { x.sel = x.max ? !!P.curDirect : x.url === P.curUrl; });
-      section(N.t('quality'), q, function (o) { if (!o.sel) P.playIndex(P.index, { url: o.url, start: P.be.time(), keepSub: true }); });
-    }
+    var qualities = P.qualities(item);
+    qualities.forEach(function (q) { q.sel = q.max ? !!P.curDirect : q.url === P.curUrl; });
+    if (qualities.length > 1) section(N.t('quality'), qualities, function (o) {
+      if (!o.sel) P.playIndex(P.index, {url:o.url,start:P.be.time(),keepSub:true});
+    });
     var sopts = [{ id: 'off', label: N.t('off'), sel: P.subLang === 'off' }];
     availableSubs(item).forEach(function (l) { sopts.push({ id: l, label: l === 'en' ? N.t('english') : N.t('persian'), sel: P.subLang === l }); });
     section(N.t('subtitles'), sopts, function (o) { N.store.set('sub', o.id); P.setSub(o.id); });
-    if (P.subLang !== 'off') {
-      var r = N.el('div', 'opt f fl sync'), val = N.el('span', 'v');
-      var paint = function () { var v = P.subOffV || 0; val.textContent = '‹ ' + (v > 0 ? '+' : '') + v.toFixed(1) + 's ›'; };
-      r.appendChild(N.ui.icon('check')); r.appendChild(N.el('span', '', N.t('subSync'))); r.appendChild(val); paint();
-      r.onnav = function (dir) { if (dir === 'left' || dir === 'right') { P.setSubOff((P.subOffV || 0) + 0.5 * ui.step(dir)); paint(); return true; } return false; };
-      r.onclick = function () { P.setSubOff(0); paint(); };
-      w.appendChild(r); w.appendChild(N.el('div', 'hint', N.t('subSyncHint')));
+    function action(label, icon, run) {
+      var b = N.el('div', 'opt f fl category action'); b.appendChild(N.ui.icon(icon));
+      b.appendChild(N.el('span', 'category-title', label));
+      b.onclick = function () { P.closeMenu(); run(); }; m.appendChild(b);
     }
-    m.classList.add('open'); P.menuOpen = true; N.nav.pushScope(m);
-    var sel = m.querySelector('.opt.sel'); N.nav.focus(sel || m.querySelector('.opt'));
+    if (P.items.length > 1) action(N.t('episodes'), 'list', function () { P.openEps(); });
+    if (P.index + 1 < P.items.length) action(N.t('nextEpisode'), 'play', function () { P.playIndex(P.index + 1); });
+    action(N.t('restartPlayback'), 'back', function () { P.seekAcc = 0; clearTimeout(P.seekTimer); P.be.seek(0); P.tick(); P.showOsd(); });
+    var audio = P.be.audioTracks();
+    if (audio.length) section(N.t('audio'), audio, function (o) { P.be.setAudio(o.id); });
+    m.classList.add('open'); $('player').classList.add('options-on'); P.menuOpen = true; N.nav.pushScope(m);
+    var sel = m.querySelector('.opt.sel'); N.nav.focus(sel || m.querySelector('.opt'), true);
     $('osd').classList.remove('off'); $('player').classList.add('osd-on');
+  };
+  P.closeChoices = function () {
+    if (!P.choices) return;
+    var c = P.choices; P.choices = null; N.nav.popScope();
+    if (c.panel.parentNode) c.panel.parentNode.removeChild(c.panel);
+    N.nav.focus(c.button, true);
   };
   P.closeMenu = function (silent) {
     if (!P.menuOpen) return;
-    $('player-menu').classList.remove('open'); P.menuOpen = false; N.nav.popScope(); N.nav.clear(); if (!silent) P.showOsd();
+    P.closeChoices();
+    $('player-menu').classList.remove('open'); $('player').classList.remove('options-on'); P.menuOpen = false; N.nav.popScope(); N.nav.clear(); if (!silent) P.showOsd();
   };
 
   /* ---------- episodes sheet (series, Down) ---------- */
@@ -527,13 +565,13 @@
     tabs.innerHTML = '';
     var map = {}, seasons = [];
     P.items.forEach(function (it, i) { var s = (it.info && it.info.season) || 1; if (!map[s]) { map[s] = []; seasons.push(s); } map[s].push(i); });
-    var multi = seasons.length > 1; box.classList.toggle('ms', multi);
+    var multi = seasons.length > 1; box.classList.toggle('ms', multi); $('player').classList.toggle('episodes-multi', multi);
     // tile to focus when entering a season: the playing episode if it is in there, else the first
     function target() { for (var q = 0; q < tiles.length; q++) if (tiles[q]._idx === P.index) return tiles[q]; return tiles[0]; }
     function build(s) {
       shown = s; tr.innerHTML = ''; tiles = [];
       map[s].forEach(function (i) {
-        var it = P.items[i], t = N.ui.epTile(it, i, {}); t._idx = i; t.onclick = function () { P.closeEps(); if (i === P.index) { if (P.paused) P.togglePause(); } else P.playIndex(i); };
+        var it = P.items[i], t = N.ui.epTile(it, i, {post:P.post}); t._idx = i; t.onclick = function () { P.closeEps(); if (i === P.index) { if (P.paused) P.togglePause(); } else P.playIndex(i); };
         t.onfocus2 = function () { N.ui.slideTo(tr, t._x); };
         if (multi) t.onnav = function (dir) {
           if (dir !== 'up') return false;
@@ -563,12 +601,12 @@
     });
     if (multi) N.ui.tabStrip(tabs);
     build(curS);
-    box.classList.add('open'); epsOpen = true; N.nav.pushScope(box);
+    box.classList.add('open'); $('player').classList.add('episodes-on'); epsOpen = true; N.nav.pushScope(box);
     N.nav.focus(target(), true); $('osd').classList.remove('off'); $('player').classList.add('osd-on');
   };
   P.closeEps = function (silent) {
     if (!epsOpen) return;
-    $('player-eps').classList.remove('open'); epsOpen = false; N.nav.popScope(); N.nav.clear(); if (!silent) P.showOsd();
+    $('player-eps').classList.remove('open'); $('player').classList.remove('episodes-on', 'episodes-multi'); epsOpen = false; N.nav.popScope(); N.nav.clear(); if (!silent) P.showOsd();
   };
 
   /* ---------- keys ---------- */
@@ -576,12 +614,12 @@
     if (!P.open) return false;
     var k = e.keyCode;
     if (P.menuOpen) {
+      if (P.choices && (k === K.BACK || k === K.ESC || k === K.BACKSPACE)) { P.closeChoices(); return true; }
       if (k === K.BACK || k === K.ESC || k === K.BACKSPACE) { P.closeMenu(); return true; }
       return false; // let spatial nav handle arrows/enter inside the menu scope
     }
     if (epsOpen) {
       if (k === K.BACK || k === K.ESC || k === K.BACKSPACE) { P.closeEps(); return true; }
-      if (k === K.DOWN && !(N.nav.cur && N.nav.cur.classList.contains('pill'))) { P.closeEps(); return true; } // Down on the season row falls through to nav (-> episodes)
       return false;
     }
     if (k === K.BACK || k === K.ESC || k === K.BACKSPACE) {

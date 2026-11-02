@@ -9,9 +9,10 @@
     ['movies', 'movies', function () { N.go('archive', { slug: 'movies', name: N.t('movies') }, { reset: true }); }],
     ['series', 'series', function () { N.go('archive', { slug: 'series', name: N.t('series') }, { reset: true }); }],
     ['anime', 'anime', function () { N.go('archive', { slug: 'anime', name: N.t('anime') }, { reset: true }); }],
-    ['archive', 'archive', function () { N.go('archive', {}, { reset: true }); }],
-    ['settings', 'settings', function () { N.go('settings', {}, { reset: true }); }]
+    ['archive', 'archive', function () { N.go('archive', {}, { reset: true }); }]
   ];
+
+  var ACCT = ['account', 'user', function () { N.go('settings', {section:'account'}, {reset:true}); }];
 
   /* ---------------- home cache ---------------- */
   var hc = { t: 0, p: null };
@@ -29,9 +30,9 @@
   N.dropHome = function () { hc.p = null; };
 
   /* ---------------- splash ---------------- */
-  var splash = { t0: Date.now(), done: false, dotsT: null, failT: null };
+  var splash = { t0: Date.now(), done: false, failT: null };
   function splashExit() {
-    if (splash.done) return; splash.done = true; clearTimeout(splash.dotsT); clearTimeout(splash.failT);
+    if (splash.done) return; splash.done = true; clearTimeout(splash.failT);
     var s = $('splash'); s.classList.add('out');
     setTimeout(function () { s.style.display = 'none'; }, 450);
   }
@@ -44,13 +45,13 @@
   /* ---------------- rail ---------------- */
   var rail = N.rail = { items: [], open: false, mem: null, pill: null, root: null };
   var Y0 = 288, PITCH = 72;
-  function yOf(i) { return Y0 + i * PITCH; }
+  function yOf(i) { return i < RAIL.length ? Y0 + i * PITCH : 966; }
   rail.build = function () {
     var r = rail.root = $('rail'); r.innerHTML = ''; rail.items = [];
     r.appendChild(el('div', 'rail-base')); r.appendChild(el('div', 'rail-scrim'));
     r.appendChild(el('div', 'rail-panel')); var br = el('div', 'rail-brand'); br.appendChild(N.ui.logo()); r.appendChild(br);
     rail.pill = el('div', 'rail-pill'); r.appendChild(rail.pill);
-    RAIL.forEach(function (m, i) {
+    RAIL.concat([ACCT]).forEach(function (m, i) {
       var b = el('button', 'ri'); b._key = m[0]; b._y = yOf(i); b.style.top = b._y + 'px';
       b.appendChild(N.ui.icon(m[1]));
       var lb = el('span', 'lb', N.t(m[0])); lb.style.transitionDelay = (i * 20) + 'ms'; b.appendChild(lb);
@@ -72,6 +73,7 @@
     while (e && e.name === 'details' && i > 0) { i--; e = stack[i]; }
     if (!e) return '';
     if (e.name === 'archive' && e.params && (e.params.slug === 'movies' || e.params.slug === 'series' || e.params.slug === 'anime')) return e.params.slug;
+    if (e.name === 'settings') return 'account';
     return e.name;
   };
   rail.mark = function () {
@@ -80,7 +82,7 @@
   };
   rail.visible = function () { return !!rail.root && !rail.root.classList.contains('gone'); };
   rail.enter = function () {
-    if (!rail.visible() || rail.open) return;
+    if (!rail.visible() || rail.open || N.nav.repeating) return;
     if (N.nav.cur && !rail.isRail(N.nav.cur)) rail.mem = N.nav.cur;
     rail.open = true; rail.root.classList.add('open');
     var k = rail.curKey(), t = rail.items[1];
@@ -98,6 +100,12 @@
       if (m && m.offsetWidth > 0 && rootEl && rootEl.contains(m)) N.nav.focus(m, true);
       else N.nav.focusFirst(rootEl || content);
     }
+  };
+  // The compact Samsung remote's Play/Pause key doubles as a browsing menu shortcut.
+  N.nav.onMenuShortcut = function (e) {
+    if (!splash.done || !rail.visible() || modal || N.nav.scopes.length || (N.player && N.player.open)) return false;
+    if (!e.repeat) { if (rail.open) rail.close(true); else rail.enter(); }
+    return true;
   };
   rail.go = function (m) {
     var same = rail.curKey() === m[0];
@@ -164,7 +172,7 @@
     if (rail.open) { rail.open = false; rail.root.classList.remove('open'); rail.mem = null; }
     if (rootEl && current) {
       rootEl.classList.add('leave'); N.nav.clear(); N.nav.locked = true;
-      swapT = setTimeout(function () { build(entry); }, 150);
+      swapT = setTimeout(function () { build(entry); }, document.body.classList.contains('calm') ? 0 : 120);
     } else build(entry);
   }
   // opts: reset (clear history), replace (swap top entry)
@@ -242,11 +250,13 @@
   document.addEventListener('DOMContentLoaded', function () {
     fit();
     content = $('content');
-    if (N.store.get('calm', false)) document.body.classList.add('calm');
+    var motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    function syncMotion() { document.body.classList.toggle('calm', motionQuery.matches || N.store.get('calm', false)); }
+    syncMotion();
+    if (motionQuery.addListener) motionQuery.addListener(syncMotion);
     N.nav.registerKeys();
     // takeover is opt-in: the background service is only started if the user turned it on in Settings
     try { if (N.store.get('tkOn', false) === true) N.takeover.ensureService(function () {}); } catch (e) {}
-    splash.dotsT = setTimeout(function () { var d = document.querySelector('#splash .dots3'); if (d) d.classList.add('on'); }, 1800);
     splash.failT = setTimeout(splashExit, 10000);
     boot();
   });

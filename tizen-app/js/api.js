@@ -39,15 +39,19 @@
   /* ---------- global request scheduler ----------
      30nama sits behind Cloudflare rate limiting (HTTP 429 / HTML "error code: 1015"). All 30nama calls go through one queue: max 2 in flight,
      small spacing, core screen calls before background (TMDB resolution) calls, and transient failures (non-JSON, 429, 5xx, timeout) are retried with backoff. */
-  var Q = { core: [], bg: [] }, inflight = 0, MAXF = 2, GAPMS = 100, lastStart = 0, pausedUntil = 0, pumpT = null, BACKOFF = [1000, 3000];
+  var Q = { core: [], bg: [] }, inflight = 0, backgroundInflight = 0, MAXF = 2, GAPMS = 100, lastStart = 0, pausedUntil = 0, pumpT = null, BACKOFF = [1000, 3000];
   var NO_RETRY = { observer: 1, logout: 1, qrlogin_login: 1 };
   function pump() {
     if (pumpT || inflight >= MAXF || !(Q.core.length || Q.bg.length)) return;
+    // Background matching may use one slot; keep the other free for navigation.
+    if (!Q.core.length && backgroundInflight >= 1) return;
     var now = Date.now(), wait = Math.max(pausedUntil - now, lastStart + GAPMS - now, 0);
     if (wait > 0) { pumpT = setTimeout(function () { pumpT = null; pump(); }, wait); return; }
-    var j = Q.core.length ? Q.core.shift() : Q.bg.shift();
+    var background = !Q.core.length;
+    var j = background ? Q.bg.shift() : Q.core.shift();
+    if (background) backgroundInflight++;
     inflight++; lastStart = now;
-    j.run().then(function (v) { inflight--; j.res(v); pump(); }, function (e) { inflight--; j.rej(e); pump(); });
+    j.run().then(function (v) { inflight--; if (background) backgroundInflight--; j.res(v); pump(); }, function (e) { inflight--; if (background) backgroundInflight--; j.rej(e); pump(); });
     pump();
   }
   function schedule(bg, run) { return new Promise(function (res, rej) { (bg ? Q.bg : Q.core).push({ run: run, res: res, rej: rej }); pump(); }); }
