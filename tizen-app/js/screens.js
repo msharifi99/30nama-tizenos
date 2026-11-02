@@ -502,6 +502,7 @@
           };
           tabs.appendChild(t);
         });
+        ui.tabStrip(tabs);
       }
       // tile to focus when entering season s: the remembered episode (an index, never a node: tiles are rebuilt on every season switch), else the first
       function epTarget(s) { var i = epMem[s]; return (i !== undefined && tileBy[i]) || track.firstChild; }
@@ -529,7 +530,7 @@
       }
       function showSeason(s, now) {
         if (s === curS) return; curS = s;
-        for (var q = 0; q < tabs.children.length; q++) tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s);
+        for (var q = 0; q < tabs.children.length; q++) if (tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s)) tabs.reveal(tabs.children[q], now);
         clearTimeout(swT); swT = null;
         if (now) { buildSeason(s); wrap.classList.remove('sw'); return; }
         wrap.classList.add('sw'); swT = setTimeout(function () { swT = null; buildSeason(s); wrap.classList.remove('sw'); }, 160);

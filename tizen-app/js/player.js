@@ -543,7 +543,7 @@
         if (i === P.index) { t.classList.add('now'); t.appendChild(N.el('div', 'np', N.t('nowPlaying'))); }
         tr.appendChild(t); tiles.push(t);
       });
-      for (var q = 0; q < tabs.children.length; q++) tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s);
+      for (var q = 0; q < tabs.children.length; q++) if (tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s) && tabs.reveal) tabs.reveal(tabs.children[q], !box.classList.contains('open'));
       hd.textContent = (multi ? '' : N.t('season') + ' ' + s + '  ·  ') + tiles.length + ' ' + N.t('episodes');
       N.ui.layoutTrack(tr, tiles, tiles.map(function () { return 360; }));
       N.ui.epTmdb(P.post, s, tiles);
@@ -561,6 +561,7 @@
       };
       tabs.appendChild(t);
     });
+    if (multi) N.ui.tabStrip(tabs);
     build(curS);
     box.classList.add('open'); epsOpen = true; N.nav.pushScope(box);
     N.nav.focus(target(), true); $('osd').classList.remove('off'); $('player').classList.add('osd-on');
