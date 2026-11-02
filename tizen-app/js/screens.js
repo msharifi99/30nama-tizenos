@@ -429,7 +429,10 @@
       root.removeChild(sk);
       var items = (st && st.hls ? st.hls.slice() : []);
       items.sort(ui.epCmp);
-      var resume = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null;
+      // newest of our own last report and the server's continue_watching (the backend sometimes drops reports)
+      var srvCw = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null;
+      var resume = N.isLoggedIn() ? N.wp.pick(post.id, srvCw) : srvCw;
+      if (resume && !items.some(function (it) { return it.info && String(it.info.file_id) === String(resume.file_id); })) resume = srvCw;
       var po = post.options || {}, isSeries = !!po.is_series;
       var tmOn = N.tmdb.enabled(), dpage = el('div', 'd-page'), col = el('div', 'det-col');
       if (tmOn) root.classList.add('tm');
