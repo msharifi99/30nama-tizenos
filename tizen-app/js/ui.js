@@ -215,6 +215,26 @@
   };
   // is `dir` ('left'|'right') towards the end edge in the current direction?
   ui.step = function (dir) { var r = N.isRtl(); return (dir === 'right') !== r ? 1 : -1; };
+  // one-row pill strip (season tabs) that shows only the pills fitting in `room` px. The focused (or current) pill keeps
+  // its neighbour on each side in view, so moving to an edge pill shifts the strip by one pill; pills outside fade out.
+  ui.tabStrip = function (tabs, room) {
+    var first = 0; room = room || 1360;
+    tabs.reveal = function (t, now) {
+      var c = tabs.children, n = c.length, i = Array.prototype.indexOf.call(c, t), x = [], w = [], p = 0, k;
+      if (i < 0 || !t.offsetWidth) return; // not laid out yet
+      for (k = 0; k < n; k++) { w.push(c[k].offsetWidth); x.push(p); p += w[k] + 12; } // 12 = .tabs .pill+.pill margin
+      function end(f) { var e = f; while (e + 1 < n && x[e + 1] + w[e + 1] - x[f] <= room) e++; return e; }
+      if (first >= n) first = 0;
+      if (first > i - 1) first = Math.max(0, i - 1);
+      while (first < i && end(first) < Math.min(n - 1, i + 1)) first++;
+      while (first > 0 && x[n - 1] + w[n - 1] - x[first - 1] <= room) first--; // no empty room after the last pill
+      var e = end(first);
+      for (k = 0; k < n; k++) c[k].classList.toggle('out', k < first || k > e);
+      if (now) tabs.style.transition = 'none';
+      tabs.style.transform = first ? 'translateX(' + (N.isRtl() ? x[first] : -x[first]) + 'px)' : '';
+      if (now) { void tabs.offsetWidth; tabs.style.transition = ''; }
+    };
+  };
 
   // Index-based grids remain predictable while their parent is animating.
   // Spatial rectangles alone can skip rows or jump back to a distant control.
