@@ -171,7 +171,18 @@ module.exports.onStart = function () {
   poll(); pollT = setInterval(poll, POLL_MS);
 };
 
-module.exports.onRequest = function () { add('info', 'onRequest (UI pinged the service)'); };
+// The UI always starts this service with operation/service. Any other launch (e.g. Smart Hub refreshing
+// previews, which belong to PreviewService) must not leave a disabled takeover polling in the background.
+module.exports.onRequest = function () {
+  var op = '';
+  try { var r = tizen.application.getCurrentApplication().getRequestedAppControl(); op = (r && r.appControl && r.appControl.operation) || ''; } catch (e) {}
+  if (op && op !== 'http://tizen.org/appcontrol/operation/service' && !cfg.enabled) {
+    add('info', 'onRequest ' + op + ' with takeover off: exiting');
+    try { tizen.application.getCurrentApplication().exit(); } catch (e) {}
+    return;
+  }
+  add('info', 'onRequest (UI pinged the service)');
+};
 
 module.exports.onExit = function () {
   clearInterval(pollT); clearInterval(knownT);

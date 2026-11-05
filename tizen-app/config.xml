@@ -16,6 +16,19 @@
   <tizen:privilege name="http://tizen.org/privilege/application.info"/>
   <access origin="*" subdomains="true"/>
   <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+  <!-- Smart Hub Preview: rows above the app tile, supplied by PreviewService (js/preview.js builds them) -->
+  <tizen:metadata key="http://samsung.com/tv/metadata/use.preview" value="bg_service"/>
+  <!-- a preview tile click reaches the running app without reloading it (appcontrol event) -->
+  <tizen:app-control>
+    <tizen:src name="index.html" reload="disable"/>
+    <tizen:operation name="http://samsung.com/appcontrol/operation/eden_resume"/>
+  </tizen:app-control>
+  <tizen:service id="Nama30TvAp.PreviewService" auto-restart="false">
+    <tizen:content src="service/preview.js"/>
+    <tizen:name>30namaPreview</tizen:name>
+    <tizen:description>Smart Hub Preview rows</tizen:description>
+    <tizen:category name="http://tizen.org/category/service"/>
+  </tizen:service>
   <tizen:service id="Nama30TvAp.TakeoverService">
     <tizen:content src="service/takeover.js"/>
     <tizen:name>30namaTakeover</tizen:name>

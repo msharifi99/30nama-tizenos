@@ -114,7 +114,11 @@
       var cw = N.isLoggedIn() ? N.api.get('continue_watching').catch(function () { return null; }) : Promise.resolve(null);
       var tmOn = N.tmdb.enabled(), tmH = Promise.resolve([]);
       if (tmOn) { root.classList.add('tm'); N.tmdb.startHome(); tmH = N.tmdb.heroes(6, 3200).catch(function () { return []; }); }
-      Promise.all([N.getHome(), cw, tmH]).then(function (res) { if (!dead) build(res[0], extractPosts(res[1]), res[1], res[2]); })
+      Promise.all([N.getHome(), cw, tmH]).then(function (res) {
+        if (dead) return;
+        build(res[0], extractPosts(res[1]), res[1], res[2]);
+        try { N.preview.fromHome(res[0], res[1]); } catch (e) {}
+      })
         .catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
     }
 
@@ -452,6 +456,12 @@
 
       var startIdx = 0;
       if (resume) items.forEach(function (it, i) { if (it.info && String(it.info.file_id) === String(resume.file_id)) startIdx = i; });
+      // opened from a Smart Hub "Next episode" tile: the saved episode is finished, start the one after it
+      if (params.next) {
+        params.next = 0;
+        var rd = resume && Number(resume.duration), rt = resume && Number(resume.time);
+        if (rd > 0 && rt / rd >= 0.95 && items[startIdx + 1]) { startIdx++; resume = null; }
+      }
       function play(i, withResume) {
         // leaving for the player: remember where we were, and fully hide the episodes sheet (it would otherwise be drawn over the video)
         backToSheet = epsOpen; lastFocus = epsOpen ? null : N.nav.cur; if (epsOpen) { epMem[curS] = i; clearTimeout(swT); swT = null; hideEps(); }

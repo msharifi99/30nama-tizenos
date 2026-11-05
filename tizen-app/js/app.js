@@ -137,6 +137,7 @@
     if (m.prev && m.prev.offsetWidth > 0) N.nav.focus(m.prev, true); else N.nav.clear();
   };
   function exitApp() {
+    try { N.preview.flush(); } catch (e) {}
     try { tizen.application.getCurrentApplication().exit(); } catch (e) { N.toast('Exit (not on Tizen)'); }
   }
   N.confirmExit = function () {
@@ -192,9 +193,15 @@
     if (!top || (top.name !== 'home' && top.name !== 'login')) { N.go('home', {}, { reset: true }); return; } // empty history or another top-level screen: Home
     N.confirmExit(); // Home (or login): exit confirm
   };
-  N.onLogout = function () { N.dropHome(); N.go('login', {}, { reset: true }); };
+  N.onLogout = function () {
+    N.dropHome(); N.go('login', {}, { reset: true });
+    try { N.preview.refresh(true); } catch (e) {} // guest rows right away: the history must not stay on the TV's home screen
+  };
+  var pvT = null;
   N.onPlayerClosed = function () {
     N.stage.restore();
+    // give the final progress report a moment to land before reading continue_watching back
+    clearTimeout(pvT); if (N.isLoggedIn()) pvT = setTimeout(function () { try { N.preview.refresh(false); } catch (e) {} }, 5000);
     if (current && current.onPlayerClosed) current.onPlayerClosed();
     else if (N.nav.cur === null && rootEl) N.nav.focusFirst(rootEl);
   };
@@ -212,7 +219,7 @@
   }
   function boot() {
     N.api.init().then(function () {
-      booted = true;
+      booted = N.booted = true;
       rail.build();
       var p = Promise.resolve();
       if (N.isLoggedIn()) {
@@ -227,6 +234,7 @@
     }).then(function () {
       if (N.isLoggedIn() || N.store.get('guest', false) === true) N.go('home', {}, { reset: true });
       else N.go('login', {}, { reset: true });
+      try { N.preview.onBoot(); } catch (e) {} // launched from a Smart Hub Preview tile: open it on top
     }).catch(bootError);
   }
 

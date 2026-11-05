@@ -15,7 +15,7 @@ Unofficial 30nama.com client for Samsung Tizen TVs. A plain HTML/CSS/JS web app 
 
 ## Architecture
 
-All code is global-namespace `N` (`window.N`), loaded by ordered `<script>` tags in `tizen-app/index.html`; load order matters (config → i18n → tmdb-token → api → tmdb → nav → stage → ui → logo → player → screens → app). No modules.
+All code is global-namespace `N` (`window.N`), loaded by ordered `<script>` tags in `tizen-app/index.html`; load order matters (config → i18n → tmdb-token → api → tmdb → nav → stage → ui → logo → player → screens → app → takeover → preview). No modules.
 
 - `config.js`: constants, API keys, key codes, `N.store` (localStorage) and DOM helpers (`N.$`, `N.el`). Decides whether to route requests through the dev proxy (only when hostname is localhost; disabled under TizenBrew's `127.0.0.1:8081/module/...` origin).
 - `api.js`: endpoint discovery with fallback hosts, session in localStorage. Requests go through a scheduler with retry/backoff (30nama is behind Cloudflare rate limiting).
@@ -23,6 +23,7 @@ All code is global-namespace `N` (`window.N`), loaded by ordered `<script>` tags
 - `stage.js`: one persistent global backdrop behind all screens except the player (the "One Stage" concept in `design/DESIGN.md`); screens are overlays that feed it images.
 - `screens.js` (largest file): QR login, Home, Details (+ seasons/episodes sheet), Search, Archive, Settings. `app.js`: boot, router with transitions, icon rail, exit/sign-out sheets, splash, Home cache (`N.getHome`, 90 s, falls back to last good copy).
 - `player.js`: uses Samsung AVPlay when `window.webapis.avplay` exists, otherwise `<video>` + bundled hls.js (the TizenBrew case). Contains subtitles overlay, resume, skip intro, Up Next, audio/subtitle sheet (Up) and episodes sheet (Down).
+- `preview.js` + `service/preview.js`: Smart Hub Preview (rows above the app tile on the TV home bar, `.wgt` only). The app builds the JSON and launches the short-lived `PreviewService`, which calls `webapis.preview.setPreviewData`; tile clicks come back as a `PAYLOAD` app control. Samsung wants 10 min between sets, so changes are throttled. Details in `tizen-app/README.md`; desktop test: `node tizen-app/tools/preview-mock.js`.
 - `tmdb.js`: optional enrichment, fully off without a token. Token comes from the git-ignored `js/tmdb-token.js` (copy `tmdb-token.example.js`) or `localStorage.tmdbToken`; `localStorage.tmdbMock='1'` serves `tools/fixtures/*.json`. Mapping between 30nama and TMDB titles is by IMDb id, then fuzzy title/year match.
 - `tools/devserver.js`: static server plus `/proxy?url=` (adds CORS, rewrites m3u8 URIs). Intentionally uses Node's `https`, not `fetch`, because Cloudflare blocks undici's TLS fingerprint. `build.sh` and the release workflow strip `tizen-app/tools/` from the package.
 
