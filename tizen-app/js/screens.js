@@ -1001,6 +1001,16 @@
     }
     function info(label, value) { var r = el('div', 'orow nof'); r.appendChild(el('span', '', label)); r.appendChild(el('div', 'v', value)); return r; }
     function action(label, fn, danger) { var r = el('div', 'orow f fl' + (danger ? ' danger' : '')); r.appendChild(el('span', '', label)); r.onclick = r.onenter = fn; return r; }
+    // Remote button tutorial: numbered steps, then the things that catch people out
+    function tkTutorial() {
+      var w = el('div', 'tut'), ol = el('ol', 'tut-steps'), tips = el('ul', 'tut-tips');
+      ['tkStep1', 'tkStep2', 'tkStep3'].forEach(function (k, i) {
+        var li = el('li'); li.appendChild(el('span', 'tut-n', String(i + 1))); li.appendChild(el('span', 'tut-t', N.t(k))); ol.appendChild(li);
+      });
+      ['tkTip1', 'tkTip2', 'tkTip3', 'tkTip4'].forEach(function (k) { tips.appendChild(el('li', '', N.t(k))); });
+      w.appendChild(ol); w.appendChild(el('div', 'tut-h', N.t('tkGood'))); w.appendChild(tips);
+      return w;
+    }
     var onOff = [{ v: true, label: N.t('on') }, { v: false, label: N.t('off') }];
     var builders = {
       account: function (p) {
@@ -1039,7 +1049,11 @@
       },
       takeover: function (p) {
         var tk = N.takeover, st = el('div', 'note tkst', N.t('tkChecking')), body = el('div', 'tkbody scroll');
-        p.appendChild(el('div', 'note tkh', N.t('tkTitle'))); p.appendChild(st); p.appendChild(body);
+        p.appendChild(el('div', 'note tkh', N.t('tkTitle')));
+        p.appendChild(el('div', 'note tkwhat', N.t('tkWhat')));
+        var how = action(N.t('tkHow'), function () { N.confirm({ title: N.t('tkTitle'), body: tkTutorial(), ok: N.t('tkGotIt'), cancel: false, wide: true }); });
+        how.classList.add('sm', 'how'); how.insertBefore(ui.icon('info'), how.firstChild); p.appendChild(how);
+        p.appendChild(st); p.appendChild(body);
         function status(txt, bad) { st.textContent = txt; st.classList.toggle('bad', !!bad); }
         function trow(label, sub, on, fn) {
           var r = el('div', 'orow sm f fl'), l = el('span', 'tkl', label); if (sub) l.appendChild(el('small', 'tkid', sub));
@@ -1059,7 +1073,10 @@
           for (i = 0; i < (s.known || []).length; i++) add(s.known[i].id, s.known[i].name);
           for (var id in (s.seen || {})) add(id, s.seen[id] && s.seen[id].name);
           for (i = 0; i < trig.length; i++) add(trig[i], '');
-          apps.sort(function (x, y) { return String(x.name || x.id).localeCompare(String(y.name || y.id)); });
+          // the apps with their own remote buttons first, in this order; the rest alphabetically
+          var TOP = [/netflix/i, /tv ?plus/i, /disney/i, /youtube/i, /prime ?video|primevideo/i];
+          function rank(a) { var k = (a.name || '') + ' ' + a.id; for (var j = 0; j < TOP.length; j++) if (TOP[j].test(k)) return j; return TOP.length; }
+          apps.sort(function (x, y) { return (rank(x) - rank(y)) || String(x.name || x.id).localeCompare(String(y.name || y.id)); });
           body.appendChild(el('div', 'note tkh', N.t('tkApps')));
           if (!apps.length) body.appendChild(el('div', 'note', N.t('tkNoApps')));
           apps.forEach(function (app) {
@@ -1067,7 +1084,6 @@
               var t = (cfg.triggers || []).filter(function (x) { return x !== app.id; }); if (on) t.push(app.id); cfg.triggers = t; trig = t; push({ triggers: t });
             }));
           });
-          body.appendChild(el('div', 'note', N.t('tkHelp')));
           if (keep >= 0) { var fs = body.querySelectorAll('.f'); if (fs[keep]) N.nav.focus(fs[keep], true); }
         }
         function push(c) { tk.setConfig(c, function (err, s) { if (dead) return; if (err) { status(N.t('tkErr') + (err.message ? ': ' + err.message : ''), true); return; } if (s) paint(s); }); }

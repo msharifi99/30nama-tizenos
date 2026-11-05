@@ -120,15 +120,17 @@
 
   /* ---------------- modal (confirm sheet) ---------------- */
   var modal = null;
+  // o: title, body (text or a DOM node), ok, onOk?, cancel (label; false = no Cancel button, e.g. an info sheet), danger, wide
   N.confirm = function (o) {
     if (modal) return;
-    var m = el('div', 'modal'), box = el('div', 'box');
-    box.appendChild(el('div', 'mt', o.title)); box.appendChild(el('div', 'mb', o.body || ''));
-    var row = el('div', 'acts'), cancel = N.ui.btn(o.cancel || N.t('cancel'), function () { N.closeModal(); }, '');
-    var ok = N.ui.btn(o.ok, function () { N.closeModal(); o.onOk(); }, o.danger ? 'danger' : 'primary');
-    row.appendChild(cancel); row.appendChild(ok); box.appendChild(row); m.appendChild(box); document.body.appendChild(m);
+    var m = el('div', 'modal'), box = el('div', 'box' + (o.wide ? ' wide' : '')), mb = el('div', 'mb');
+    if (o.body && o.body.nodeType) mb.appendChild(o.body); else mb.textContent = o.body || '';
+    box.appendChild(el('div', 'mt', o.title)); box.appendChild(mb);
+    var row = el('div', 'acts'), cancel = o.cancel === false ? null : N.ui.btn(o.cancel || N.t('cancel'), function () { N.closeModal(); }, '');
+    var ok = N.ui.btn(o.ok, function () { N.closeModal(); if (o.onOk) o.onOk(); }, o.danger ? 'danger' : 'primary');
+    if (cancel) row.appendChild(cancel); row.appendChild(ok); box.appendChild(row); m.appendChild(box); document.body.appendChild(m);
     modal = { el: m, prev: N.nav.cur };
-    N.nav.pushScope(m); void m.offsetWidth; m.classList.add('show'); N.nav.focus(cancel, true);
+    N.nav.pushScope(m); void m.offsetWidth; m.classList.add('show'); N.nav.focus(cancel || ok, true);
   };
   N.closeModal = function () {
     if (!modal) return; var m = modal; modal = null;

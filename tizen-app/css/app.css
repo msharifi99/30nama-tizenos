@@ -479,6 +479,18 @@ html[dir=rtl] .orow.sm{padding-right:28px;padding-left:28px}
 .orow.focus.tkon .v{color:rgba(11,12,16,.9)}
 .set .tkh{margin:16px 0 10px;font-weight:600}
 .set .tkst.bad{color:var(--danger)}
+.set .tkwhat{margin-top:0;margin-bottom:16px;line-height:1.45}
+.orow.how{justify-content:flex-start}
+.orow.how .ico{width:32px;height:32px;margin-inline-end:16px;flex:none}
+.modal .box.wide{width:1040px}
+.tut{line-height:1.45}
+.tut-steps,.tut-tips{list-style:none;margin:0;padding:0}
+.tut-steps li{display:flex;align-items:flex-start;margin-bottom:18px;color:var(--text-1)}
+.tut-n{flex:none;width:44px;height:44px;border-radius:22px;background:var(--accent);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;margin-inline-end:20px}
+.tut-t{padding-top:4px}
+.tut-h{margin:28px 0 10px;font-weight:600;color:var(--text-1)}
+.tut-tips li{position:relative;padding-inline-start:28px;margin-bottom:10px;font-size:var(--t-cap)}
+.tut-tips li::before{content:"";position:absolute;inset-inline-start:6px;top:.6em;width:8px;height:8px;border-radius:4px;background:var(--text-2)}
 .orow.danger{color:var(--danger)}
 .subsample{height:120px;border-radius:var(--r-tile);background:#000;display:flex;align-items:center;justify-content:center;margin-bottom:12px;font-weight:500;text-shadow:0 0 4px #000,0 2px 6px #000;line-height:1.5}
 .set .note{font-size:var(--t-cap);color:var(--text-2);margin-top:12px}
