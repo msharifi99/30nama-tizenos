@@ -8,6 +8,12 @@
     var a = r.posts || r.items || r.list || (r instanceof Array ? r : []);
     return a.map(function (x) { return x && x.post ? x.post : x; }).filter(function (x) { return x && x.id; });
   }
+  // the raw entries behind extractPosts(r), index for index
+  function cwItems(r) {
+    if (!r) return [];
+    var a = r.posts || r.items || r.list || (r instanceof Array ? r : []);
+    return a.filter(function (x) { var p = x && x.post ? x.post : x; return p && p.id; });
+  }
   function userObj(r) { return (r && r.user_session) ? r : (r && r.user && r.user.user_session ? r.user : null); }
   function errorView(root, e, retry) {
     root.innerHTML = '';
@@ -114,7 +120,12 @@
       var cw = N.isLoggedIn() ? N.api.get('continue_watching').catch(function () { return null; }) : Promise.resolve(null);
       var tmOn = N.tmdb.enabled(), tmH = Promise.resolve([]);
       if (tmOn) { root.classList.add('tm'); N.tmdb.startHome(); tmH = N.tmdb.heroes(6, 3200).catch(function () { return []; }); }
-      Promise.all([N.getHome(), cw, tmH]).then(function (res) { if (!dead) build(res[0], extractPosts(res[1]), res[1], res[2]); })
+      Promise.all([N.getHome(), cw, tmH]).then(function (res) {
+        if (dead) return;
+        // fold in our own newer progress (the backend sometimes drops reports)
+        var m = N.isLoggedIn() ? N.wp.cw(extractPosts(res[1]), cwItems(res[1])) : { posts: [], raw: [] };
+        build(res[0], m.posts, m.raw, res[2]);
+      })
         .catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
     }
 
@@ -131,7 +142,7 @@
       root.removeChild(sk);
       heroes = ((h.hero_header && h.hero_header.posts) || []).slice(0, 8);
       if (tmHeroes && tmHeroes.length >= 3) heroes = tmHeroes;
-      var cwList = (cwRaw && (cwRaw.posts || cwRaw.items || cwRaw.list || (cwRaw instanceof Array ? cwRaw : []))) || [];
+      var cwList = cwRaw || [];
       cwPosts.forEach(function (p) { cwIds[p.id] = true; });
       if (cwPosts.length) defs.push({ key: 'cw', title: N.t('continueWatching'), kind: 'land', posts: cwPosts, raw: cwList });
       ['new_releases', 'suggested', 'top_10', 'movies', 'series', 'anime'].forEach(function (k) {
