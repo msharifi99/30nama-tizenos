@@ -189,17 +189,32 @@
     if (!postId || !c || !c.file_id) return;
     var cur = wpRec(c, Date.now()), prev = N.store.get('wpServer', {})[String(postId)];
     if (wpSame(prev, cur)) return;
-    // first sighting of a value that disagrees with our own report: it is the stale one, it must not win just for being new to us
-    var loc = N.store.get('wpLocal', {})[String(postId)];
-    if (!prev && loc && !wpSame(loc, cur)) cur.at = 0;
+    // a first sighting has no known time: it must not win (or rank in Continue Watching) just for being new to us.
+    // Where it agrees with our own report the two are the same value anyway.
+    if (!prev) cur.at = 0;
     wpPut('wpServer', postId, cur);
   };
-  // record the server's current value first, so the local record written after it is always the newer one
-  wp.sync = function (p) {
+  // compact copy of a post, enough for a Continue Watching card + billboard when the server's list lacks it
+  var wpPostSaved = {};
+  function wpSavePost(post) {
+    if (!post || !post.id || wpPostSaved[post.id]) return;
+    wpPostSaved[post.id] = 1;
+    var m = N.store.get('wpPosts', {}), loc = N.store.get('wpLocal', {}), po = post.options || {};
+    m[String(post.id)] = { id: post.id, title: post.title, plot: post.plot, image: post.image, score: post.score, info: post.info, genre: post.genre, options: { is_series: po.is_series } };
+    Object.keys(m).forEach(function (k) { if (k !== String(post.id) && !loc[k]) delete m[k]; });
+    N.store.set('wpPosts', m);
+  }
+  // record the server's current value first, so the local record written after it is always the newer one.
+  // `info` (season/episode) and `post` are only kept locally, never sent with the report.
+  wp.sync = function (p, info, post) {
     return timeout(api.call('stream', { post_id: p.post_id, free_stream: 0 }, { noRetry: true }), 5000, 'stream').then(function (j) {
       if (j && j.success && j.result) wp.observe(p.post_id, j.result.continue_watching);
     }).catch(function () {}).then(function () {
-      wpPut('wpLocal', p.post_id, wpRec(p, Date.now()));
+      var rec = wpRec(p, Date.now());
+      if (info && info.season) rec.season = info.season;
+      if (info && info.episode) rec.episode = info.episode;
+      wpPut('wpLocal', p.post_id, rec);
+      wpSavePost(post);
     });
   };
   wp.pick = function (postId, c) {
@@ -208,7 +223,40 @@
     var r = loc && (!srv || loc.at >= srv.at) ? loc : srv;
     return r ? { file_id: r.file_id, time: r.time, duration: r.duration } : null;
   };
-  wp.clear = function () { N.store.del('wpLocal'); N.store.del('wpServer'); };
+  /* Home's Continue Watching: apply our newer local progress to the server's list. Entries where the local record wins
+     and disagrees with the server move up by the time we watched them (the server's order is kept among the rest);
+     recent local watches the server has never shown us are added from the saved post copy. A post the server did
+     show us before and now leaves out was removed or finished there, so it stays out.
+     Returns { posts, raw } with raw[i] describing posts[i]. */
+  var WP_ADD_MS = 14 * 864e5;
+  wp.cw = function (posts, raw) {
+    var loc = N.store.get('wpLocal', {}), now = Date.now(), seen = {}, front = [], rest = [];
+    posts.forEach(function (p, i) {
+      var r0 = raw[i] || p, c = r0.continue_watching || r0, id = String(p.id);
+      seen[id] = 1;
+      if (c && c.file_id) wp.observe(id, c);
+      var l = loc[id], srv = N.store.get('wpServer', {})[id];
+      if (l && (!srv || l.at >= srv.at) && !(c && c.file_id && wpSame(l, c))) {
+        var m = { file_id: l.file_id, time: l.time, duration: l.duration, season: l.season, episode: l.episode };
+        if (!m.season && c && String(c.file_id) === l.file_id) { m.season = c.season || (c.info && c.info.season); m.episode = c.episode || (c.info && c.info.episode); }
+        front.push({ p: p, r: { continue_watching: m }, at: l.at });
+      } else rest.push({ p: p, r: r0, at: (srv && srv.at) || 0 });
+    });
+    var saved = N.store.get('wpPosts', {});
+    Object.keys(loc).forEach(function (id) {
+      var l = loc[id], srv = N.store.get('wpServer', {})[id];
+      if (seen[id] || srv || !saved[id] || now - (l.at || 0) > WP_ADD_MS) return;
+      if (l.duration && l.time / l.duration >= 0.95) return; // finished: the server drops those too
+      front.push({ p: saved[id], r: { continue_watching: l }, at: l.at });
+    });
+    front.sort(function (a, b) { return b.at - a.at; });
+    var all = [], fi = 0, ri = 0;
+    while (fi < front.length || ri < rest.length) {
+      if (ri >= rest.length || (fi < front.length && front[fi].at >= rest[ri].at)) all.push(front[fi++]); else all.push(rest[ri++]);
+    }
+    return { posts: all.map(function (x) { return x.p; }), raw: all.map(function (x) { return x.r; }) };
+  };
+  wp.clear = function () { N.store.del('wpLocal'); N.store.del('wpServer'); N.store.del('wpPosts'); wpPostSaved = {}; };
   N.setSession = function (user) {
     N.session = { token: user.user_session, user: user };
     N.store.set('session', N.session);

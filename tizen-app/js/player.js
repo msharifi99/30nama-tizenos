@@ -353,7 +353,7 @@
     if (wpBusy && !final) return;
     wpBusy++;
     function send() { wpBusy--; sendReport(p, !!final, 0); }
-    wpChain = wpChain.then(function () { return N.wp.sync(p); }).then(send, send);
+    wpChain = wpChain.then(function () { return N.wp.sync(p, info, P.post); }).then(send, send);
   };
   P.reportNow = function () { if (P.be && P.be.time() > 1) P.report(true); };
 
