@@ -119,11 +119,16 @@
   };
 
   /* ---------------- modal (confirm sheet) ---------------- */
-  var modal = null;
+  var modal = null, exitSerial = 0;
   N.confirm = function (o) {
     if (modal) return;
-    var m = el('div', 'modal'), box = el('div', 'box');
+    var m = el('div', 'modal' + (o.kind === 'exit' ? ' exit-confirm' : '')), box = el('div', 'box');
     box.appendChild(el('div', 'mt', o.title)); box.appendChild(el('div', 'mb', o.body || ''));
+    if (o.kind === 'exit') {
+      var titleID = 'exit-title-' + (++exitSerial);
+      box.firstChild.id = titleID;
+      m.setAttribute('role', 'alertdialog'); m.setAttribute('aria-modal', 'true'); m.setAttribute('aria-labelledby', titleID);
+    }
     var row = el('div', 'acts'), cancel = N.ui.btn(o.cancel || N.t('cancel'), function () { N.closeModal(); }, '');
     var ok = N.ui.btn(o.ok, function () { N.closeModal(); o.onOk(); }, o.danger ? 'danger' : 'primary');
     row.appendChild(cancel); row.appendChild(ok); box.appendChild(row); m.appendChild(box); document.body.appendChild(m);
@@ -140,7 +145,7 @@
     try { tizen.application.getCurrentApplication().exit(); } catch (e) { N.toast('Exit (not on Tizen)'); }
   }
   N.confirmExit = function () {
-    N.confirm({ title: N.t('exitTitle'), body: N.t('exitBody'), ok: N.t('exit'), danger: false, onOk: exitApp });
+    N.confirm({ kind: 'exit', title: N.t('exitTitle'), body: N.t('exitBody'), ok: N.t('exit'), danger: false, onOk: exitApp });
   };
 
   /* ---------------- router ---------------- */

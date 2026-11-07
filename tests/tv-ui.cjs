@@ -100,6 +100,23 @@ const artwork = (poster,i=0) => `<svg xmlns="http://www.w3.org/2000/svg" width="
  await check('modal traps navigation',()=>({ok:!!N.nav.cur.closest('.modal')}));
  await page.keyboard.press('Escape');
  await check('closing modal is excluded from focus candidates',()=>({ok:!N.nav.candidates().some(e=>e.closest('.modal'))}));
+ // Exit uses its own surface; other confirmation sheets retain their layout.
+ await page.waitForTimeout(280);
+ await page.evaluate(()=>{window.beforeExitFocus=N.nav.cur;window.exitCalls=0;window.tizen={application:{getCurrentApplication:()=>({exit:()=>window.exitCalls++})}};N.confirmExit();});
+ await check('exit confirmation defaults to Cancel and has dialog semantics',()=>{const m=document.querySelector('.exit-confirm');return {ok:m.getAttribute('role')==='alertdialog'&&m.getAttribute('aria-modal')==='true'&&document.getElementById(m.getAttribute('aria-labelledby'))===m.querySelector('.mt')&&N.nav.cur===m.querySelector('.btn')};});
+ await check('exit buttons remain balanced inside the safe-area panel',()=>{const m=document.querySelector('.exit-confirm'),p=m.querySelector('.box').getBoundingClientRect(),bs=[...m.querySelectorAll('.btn')].map(e=>e.getBoundingClientRect());return {ok:p.left>=96&&p.right<=1824&&p.top>=54&&p.bottom<=1026&&Math.abs(bs[0].width-bs[1].width)<12&&bs.every(b=>b.left>=p.left&&b.right<=p.right)};});
+ await page.screenshot({path:path.join(out,lang+'-exit.png')});
+ await page.keyboard.press(lang==='fa'?'ArrowLeft':'ArrowRight');
+ await check('exit confirmation supports mirrored remote navigation',()=>({ok:N.nav.cur===document.querySelectorAll('.exit-confirm .btn')[1]}));
+ await page.keyboard.press('Escape');await page.waitForTimeout(280);
+ await check('Back cancels exit and restores focus',()=>({ok:window.exitCalls===0&&!document.querySelector('.exit-confirm')&&N.nav.cur===window.beforeExitFocus}));
+ await page.evaluate(()=>{N.confirmExit();document.querySelector('.exit-confirm .btn').click();});await page.waitForTimeout(280);
+ await check('Cancel leaves the app open and restores focus',()=>({ok:window.exitCalls===0&&N.nav.cur===window.beforeExitFocus}));
+ await page.evaluate(()=>{N.confirmExit();document.querySelectorAll('.exit-confirm .btn')[1].click();});await page.waitForTimeout(280);
+ await check('Exit invokes the platform once',()=>({ok:window.exitCalls===1}));
+ await page.evaluate(()=>N.confirm({title:'Other confirmation',ok:'OK',onOk:function(){}}));
+ await check('other confirmations keep their original panel width',()=>{const m=document.querySelector('.modal.show');return {ok:!m.classList.contains('exit-confirm')&&m.querySelector('.box').offsetWidth===720};});
+ await page.keyboard.press('Escape');await page.waitForTimeout(280);
  await page.evaluate(()=>N.go('archive',{slug:'movies',name:'Movies'},{reset:true}));await page.waitForSelector('.ggrid .card');await page.waitForTimeout(350);
  await check('archive uses seven columns',()=>{const a=[...document.querySelectorAll('.ggrid .gcell')];return {ok:a[6].offsetTop===a[0].offsetTop&&a[7].offsetTop>a[0].offsetTop};});
  for(let i=0;i<18;i++)await page.keyboard.press('ArrowDown');await page.waitForTimeout(250);
