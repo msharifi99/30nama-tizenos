@@ -1,7 +1,8 @@
 /* 30nama button-takeover background service (Tizen TV Node runtime, `tizen` global).
    Watches which apps start / come to the foreground. When takeover is enabled and a
    trigger app activates (e.g. Samsung TV Plus, Prime Video), launches 30nama on top.
-   UI talks to it over http://127.0.0.1:8097 (GET /state, POST /config, POST /clear).
+   UI talks to it over http://127.0.0.1:8097 (GET /state, POST /config, POST /clear,
+   GET/POST /photos, POST /photos/delete, GET /p|t/<id>.jpg). Photos are also served read-only on LAN port 8090.
    ES5 only: Tizen 3/4 ship an old Node. */
 'use strict';
 var http = require('http');
@@ -131,9 +132,113 @@ function send(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+/* ---------- photos: JPEGs the UI captured, stored on disk, browsable from the LAN ---------- */
+var PHOTO_DIR = process.env.PHOTO_DIR || '/home/owner/share/30nama-photos';
+var LAN_PORT = 8090;
+var photos = [], lanServer = null;
+function photoIndex() { return PHOTO_DIR + '/index.json'; }
+function loadPhotos() {
+  try { fs.mkdirSync(PHOTO_DIR); } catch (e) {} // exists already, or the write below reports it
+  try { photos = JSON.parse(fs.readFileSync(photoIndex(), 'utf8')) || []; } catch (e) { photos = []; }
+}
+function savePhotos() {
+  try { fs.writeFileSync(photoIndex(), JSON.stringify(photos)); } catch (e) { add('error', 'save photos: ' + e.message); }
+}
+function b64(s) { return Buffer.from ? Buffer.from(s, 'base64') : new Buffer(s, 'base64'); }
+function lanUrl() {
+  try {
+    var ifs = require('os').networkInterfaces(), k, i;
+    for (k in ifs) for (i = 0; i < ifs[k].length; i++) {
+      var a = ifs[k][i];
+      if ((a.family === 'IPv4' || a.family === 4) && !a.internal) return 'http://' + a.address + ':' + LAN_PORT + '/';
+    }
+  } catch (e) {}
+  return '';
+}
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+function clock(t) { t = Math.floor(t || 0); var h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? h + ':' : '') + (m < 10 && h ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s; }
+function lanPage() {
+  var by = {}, groups = [];
+  photos.slice().reverse().forEach(function (p) { // newest first; a title's section sits where its newest photo is
+    var k = p.title || '-';
+    if (!by[k]) { by[k] = []; groups.push({ title: k, items: by[k] }); }
+    by[k].push(p);
+  });
+  var body = groups.map(function (g) {
+    return '<section><h2>' + esc(g.title) + ' <small>' + g.items.length + '</small></h2><div class="g">' + g.items.map(function (p) {
+      var cap = (p.sub ? esc(p.sub) + ' · ' : '') + clock(p.t);
+      return '<figure data-q="' + esc((p.title + ' ' + p.sub).toLowerCase()) + '"><a href="p/' + p.id + '.jpg"><img loading="lazy" src="t/' + p.id + '.jpg" alt=""></a>' +
+        '<figcaption>' + cap + ' <a download="30nama-' + p.id + '.jpg" href="p/' + p.id + '.jpg">Download</a></figcaption></figure>';
+    }).join('') + '</div></section>';
+  }).join('');
+  // search filters photos by title / episode; a section with no match hides
+  var js = 'var q=document.getElementById("q");q.oninput=function(){var v=q.value.trim().toLowerCase();' +
+    '[].forEach.call(document.querySelectorAll("section"),function(s){var n=0;[].forEach.call(s.querySelectorAll("figure"),function(f){var on=!v||f.getAttribute("data-q").indexOf(v)>=0;f.hidden=!on;if(on)n++;});s.hidden=!n;});};';
+  return '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>30nama photos</title>' +
+    '<style>body{margin:0;padding:16px;background:#0b0c10;color:#e8e8ee;font:15px system-ui,sans-serif}h1{font-size:20px;margin:0 0 12px}' +
+    'h2{font-size:17px;margin:24px 0 10px}h2 small{color:#aab;font-weight:400}input{width:100%;max-width:420px;box-sizing:border-box;padding:10px 12px;border-radius:8px;border:1px solid #333;background:#16181f;color:inherit;font:inherit}' +
+    '.g{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}figure{margin:0}img{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#222;display:block}' +
+    'figcaption{margin-top:6px;color:#aab}a{color:#ffb347}[hidden]{display:none!important}</style><h1>30nama photos (' + photos.length + ')</h1>' +
+    (photos.length ? '<input id="q" type="search" placeholder="Search titles">' + body + '<script>' + js + '</script>' : '<p>No photos yet. While watching, press Up and pick Photo mode, or press the red button.</p>');
+}
+// GET routes shared by the loopback API and the LAN server: /p/<id>.jpg (full), /t/<id>.jpg (thumbnail)
+function servePhotoFile(req, res) {
+  var m = /^\/(p|t)\/(\d+)\.jpg$/.exec(req.url);
+  if (!m) return false;
+  fs.readFile(PHOTO_DIR + '/' + m[2] + (m[1] === 't' ? '_t' : '') + '.jpg', function (e, buf) {
+    if (e) { res.writeHead(404); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'max-age=31536000' });
+    res.end(buf);
+  });
+  return true;
+}
+function readBody(req, max, cb) {
+  var parts = [], n = 0;
+  req.on('data', function (c) { n += c.length; if (n > max) { req.destroy(); return; } parts.push(c); });
+  req.on('end', function () { cb(Buffer.concat(parts).toString('utf8')); });
+}
+function photoApi(req, res) {
+  if (req.method === 'GET' && req.url === '/photos') { send(res, 200, { photos: photos, lan: lanServer ? lanUrl() : '' }); return true; }
+  if (req.method === 'POST' && req.url === '/photos') {
+    readBody(req, 20e6, function (body) {
+      try {
+        var b = JSON.parse(body), id = Date.now();
+        if (!b.full || !b.thumb) throw new Error('missing image');
+        fs.writeFileSync(PHOTO_DIR + '/' + id + '.jpg', b64(b.full));
+        fs.writeFileSync(PHOTO_DIR + '/' + id + '_t.jpg', b64(b.thumb));
+        photos.push({ id: id, title: String(b.title || ''), sub: String(b.sub || ''), t: +b.t || 0 });
+        savePhotos(); send(res, 200, { id: id });
+      } catch (e) { add('error', 'save photo: ' + e.message); send(res, 500, { error: e.message }); }
+    });
+    return true;
+  }
+  if (req.method === 'POST' && req.url === '/photos/delete') {
+    readBody(req, 1e4, function (body) {
+      var id; try { id = +JSON.parse(body).id; } catch (e) { return send(res, 400, { error: 'bad json' }); }
+      photos = photos.filter(function (p) { return p.id !== id; });
+      try { fs.unlinkSync(PHOTO_DIR + '/' + id + '.jpg'); } catch (e) {}
+      try { fs.unlinkSync(PHOTO_DIR + '/' + id + '_t.jpg'); } catch (e) {}
+      savePhotos(); send(res, 200, { ok: true });
+    });
+    return true;
+  }
+  return servePhotoFile(req, res);
+}
+// Read-only on purpose: anyone on the home network can view and download, only the TV UI (loopback) can add or delete.
+function startLan() {
+  lanServer = http.createServer(function (req, res) {
+    if (req.method !== 'GET') { res.writeHead(405); return res.end(); }
+    if (req.url === '/' || req.url === '/index.html') { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end(lanPage()); }
+    if (!servePhotoFile(req, res)) { res.writeHead(404); res.end(); }
+  });
+  lanServer.on('error', function (e) { add('error', 'lan http: ' + e.message); lanServer = null; });
+  lanServer.listen(LAN_PORT, '0.0.0.0');
+}
+
 function startServer() {
   server = http.createServer(function (req, res) {
     if (req.method === 'OPTIONS') return send(res, 204, {});
+    if (photoApi(req, res)) return;
     if (req.method === 'GET' && req.url === '/state') return send(res, 200, state());
     if (req.method === 'POST' && (req.url === '/config' || req.url === '/clear')) {
       var body = '';
@@ -165,7 +270,9 @@ module.exports.onStart = function () {
   } catch (e) { selfPkg = FALLBACK_TARGET.split('.')[0]; cfg.target = FALLBACK_TARGET; }
   add('info', 'service start, Tizen ' + stats.platform + ', target ' + cfg.target);
   loadCfg();
+  loadPhotos();
   startServer();
+  startLan();
   listen();
   refreshKnown(); knownT = setInterval(refreshKnown, KNOWN_REFRESH_MS);
   poll(); pollT = setInterval(poll, POLL_MS);
@@ -176,4 +283,5 @@ module.exports.onRequest = function () { add('info', 'onRequest (UI pinged the s
 module.exports.onExit = function () {
   clearInterval(pollT); clearInterval(knownT);
   try { if (server) server.close(); } catch (e) {}
+  try { if (lanServer) lanServer.close(); } catch (e) {}
 };

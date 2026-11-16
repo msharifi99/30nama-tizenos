@@ -14,8 +14,9 @@
   // filename -> 'ok' | 'bad' | 'unknown': Tizen TVs cannot decode DTS / DTS-HD / TrueHD; AAC, AC3, EAC3 (incl. Atmos in DDP), Opus, MP3, FLAC are fine
   D.audioOf = function (name) {
     var a = ' ' + String(name).replace(/\.(mkv|mp4|m4v)\b/i, ' ').replace(/[._\-()\[\]\s]+/g, ' ') + ' ';
-    var good = /\b(DDP|DD\+|E ?AC ?3|AC ?3|AAC|Opus|FLAC|MP3|DD ?[257]|DD)(?![A-Za-z])/i.test(a);
-    var bad = /\bDTS|\bTrue ?HD|\bMLP\b/i.test(a) || (/\bAtmos\b/i.test(a) && !good);
+    var bad = /\bDTS|\bTrue ?HD|\bMLP\b/i.test(a);
+    // bare "Atmos" on web releases is DD+ Atmos (TrueHD Atmos is caught above); AVPlay's track check still guards at play time
+    var good = !bad && /\b(DDP|DD\+|E ?AC ?3|AC ?3|AAC|Opus|FLAC|MP3|DD ?[257]|DD|Atmos)(?![A-Za-z])/i.test(a);
     return good ? 'ok' : bad ? 'bad' : 'unknown';
   };
   // last path segment, decoded: stable key for a file whose URL (ip / expiry / hash) changes
@@ -183,6 +184,49 @@
     if (!c) return [];
     cs.forEach(function (x) { if (x !== c) ((x.e.h || 0) === (c.e.h || 0) ? same : rest).push(x); });
     return [c].concat(same, rest);
+  };
+  // episode the file really holds, from the release title embedded in the first bytes (some uploads are named after the wrong episode).
+  // -> {s, e} | null (unknown / unreadable). Cached per file name.
+  var epMem = {};
+  D.realEp = function (url) {
+    var k = D.fname(url), st = N.store.get('dlEp', null) || {};
+    if (k in epMem) return Promise.resolve(epMem[k]);
+    if (st[k] !== undefined) return Promise.resolve(epMem[k] = st[k]);
+    var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null, t = setTimeout(function () { if (ctl) ctl.abort(); }, 6000);
+    return fetch(N.proxied(url), { headers: { Range: 'bytes=0-262143' }, signal: ctl && ctl.signal }).then(function (r) {
+      if (!r.ok) throw new Error(r.status);
+      return r.arrayBuffer();
+    }).then(function (buf) {
+      var b = new Uint8Array(buf), s = '', i, m, re = /[A-Za-z0-9 ._|\-]{12,}/g, se = null;
+      for (i = 0; i < b.length; i++) s += b[i] >= 32 && b[i] < 127 ? String.fromCharCode(b[i]) : '\n';
+      while ((m = re.exec(s)) && !se) se = /(?:^|[^A-Za-z0-9])S(\d{1,2})[ ._]?E(\d{1,3})(?![0-9])/i.exec(m[0]);
+      var v = se ? { s: +se[1], e: +se[2] } : null;
+      st = N.store.get('dlEp', null) || {}; st[k] = v; var ks = Object.keys(st); while (ks.length > 500) delete st[ks.shift()];
+      N.store.set('dlEp', st); clearTimeout(t);
+      return (epMem[k] = v);
+    }).catch(function () { clearTimeout(t); return null; }); // network/CORS failure: not cached, trust the name
+  };
+  // url for items[idx]: the given file if its content matches (or can't be read); else the same-season file that really holds
+  // this episode in the same release; null if none was found
+  D.resolve = function (items, idx, url) {
+    var inf = items[idx].info || {}, s = parseInt(inf.season, 10) || 1, e = parseInt(inf.episode, 10);
+    var rel = function (u) { return D.fname(u).replace(/S\d{1,2}E\d{1,3}/i, ''); }, r0 = rel(url), seen = {}, list = [];
+    return D.realEp(url).then(function (v) {
+      if (!v || !(e > 0) || (v.s === s && v.e === e)) return url;
+      items.forEach(function (it) {
+        var ii = it.info || {}; if ((parseInt(ii.season, 10) || 1) !== s) return;
+        var m = it.file && it.file.m3u8; if (!(m instanceof Array)) return;
+        m.forEach(function (x) { var u = x && x.direct && trim(x['default'] || x.url || ''); if (u && !seen[u] && u !== url) { seen[u] = 1; list.push(u); } });
+      });
+      list =list.filter(function (u) { return rel(u) === r0; }); // shortcut: only the same release is searched (other releases are checked when they get picked themselves)
+      var i = 0;
+      function next() {
+        if (i >= list.length) return null;
+        var u = list[i++];
+        return D.realEp(u).then(function (w) { return w && w.s === s && w.e === e ? u : next(); });
+      }
+      return next();
+    });
   };
   // long: downloads are the only playable source, so wait for them (otherwise they are optional and capped at 6 s)
   D.fetch = function (post, wantStream, long) {

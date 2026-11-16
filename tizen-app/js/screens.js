@@ -21,7 +21,7 @@
     var pend = false, last;
     function settle() { if (pend) { pend = false; fn(last); } }
     N.nav.onSettle(settle);
-    return { run: function (a) { last = a; if (N.nav.isFast()) pend = true; else { pend = false; fn(a); } }, off: function () { N.nav.offSettle(settle); } };
+    return { run: function (a) { last = a; pend = false; fn(a); /* immediate: deferring left posters empty while scrolling */ }, off: function () { N.nav.offSettle(settle); } };
   }
   function instant(root, fn) { root.classList.add('noanim'); fn(); void root.offsetWidth; root.classList.remove('noanim'); }
   function skeletonHome(root) {
@@ -362,7 +362,6 @@
     }
     // image windowing waits for key-repeat to end (decoding while scrolling fast costs frames)
     function win(ri, i) {
-      if (N.nav.isFast()) { winPend = true; return; }
       winPend = false; windowRows(ri); windowRow(ri, i);
     }
     function winSettle() {
@@ -381,7 +380,7 @@
     function onCardFocus(ri, i) {
       if (st.mode !== 'browse') { st.mode = 'browse'; root.classList.add('browse'); }
       mem[ri] = i; setRow(ri); ui.slideTo(tracks[ri], cards[ri][i]._x);
-      if (N.nav.isFast()) winPend = true; else windowRow(ri, i);
+      windowRow(ri, i);
       var p = cards[ri][i]._post; curPost = p; curEb = eyebrowFor(p, defs[ri].key, i + 1);
       follow();
     }
@@ -489,7 +488,7 @@
       root.removeChild(sk);
       var items = lateP ? [] : (st && st.hls ? st.hls.slice() : []), waiting = !!lateP, autoPending = false;
       items.sort(ui.epCmp);
-      var resume = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null;
+      var cw = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null, resume = null;
       var po = post.options || {}, isSeries = !!po.is_series;
       var tmOn = N.tmdb.enabled(), dpage = el('div', 'd-page'), col = el('div', 'det-col');
       if (tmOn) root.classList.add('tm');
@@ -508,7 +507,8 @@
       dpage.appendChild(col); root.appendChild(dpage);
 
       var startIdx = 0;
-      function pickStart() { startIdx = 0; if (resume) items.forEach(function (it, i) { if (it.info && String(it.info.file_id) === String(resume.file_id)) startIdx = i; }); }
+      // backend continue_watching vs the local record: whichever is further into the title wins
+      function pickStart() { resume = N.progress.pick(post.id, cw, items); startIdx = resume ? resume.idx : 0; }
       pickStart();
       function play(i, withResume) {
         // leaving for the player: remember where we were, and fully hide the episodes sheet (it would otherwise be drawn over the video)
@@ -572,7 +572,7 @@
         track.innerHTML = ''; tileBy = {}; var tiles = [];
         map[s].forEach(function (idx) {
           var it = items[idx], prog = 0;
-          if (resume && it.info && String(it.info.file_id) === String(resume.file_id) && Number(resume.duration) > 0) prog = Number(resume.time) / Number(resume.duration);
+          if (resume && resume.idx === idx && Number(resume.duration) > 0) prog = Number(resume.time) / Number(resume.duration);
           var t = ui.epTile(it, idx, { progress: prog });
           t.onclick = function () { play(idx, true); };
           t.onfocus2 = function () { ui.slideTo(track, t._x); epMem[s] = idx; };
@@ -760,17 +760,10 @@
       }
       if (tmOn) N.tmdb.details(post).then(function (d) { if (!dead && d) paintTmdb(d); }).catch(function () {});
       current.onPlayerClosed = function () {
-        var last = N.player.last, found = -1;
-        if (last && String(last.post_id) === String(post.id)) {
-          items.forEach(function (it, i) {
-            if (it.info && String(it.info.file_id) === String(last.file_id)) found = i;
-          });
-          if (found >= 0) {
-            resume = { file_id: last.file_id, time: last.time, duration: last.duration };
-            startIdx = found;
-            playB.lastChild.textContent = playLabel();
-          }
-        }
+        var last = N.player.last;
+        if (last && String(last.post_id) === String(post.id)) cw = { file_id: last.file_id, time: last.time, duration: last.duration };
+        // the local record was updated while playing (also for episodes the backend can't track)
+        if (N.player.post && String(N.player.post.id) === String(post.id)) { pickStart(); playB.lastChild.textContent = playLabel(); }
         if (backToSheet && sheet) { backToSheet = false; openEps(N.player.index, true); return; } // same season, on the episode just played (or the one autoplay moved to)
         var t = lastFocus && document.body.contains(lastFocus) && lastFocus.offsetWidth > 0 ? lastFocus : playB; N.nav.focus(t, true);
       };
@@ -933,6 +926,7 @@
       var p = ui.pill(N.t(s[1]), function () { if (tab === s[0]) return; tab = s[0]; paint(); reset(); }, tab === s[0]); p._k = s[0]; sorts.appendChild(p);
       p.onnav = function (dir) { if (dir === 'down') return cells[0] ? cells[0].card : true; if (dir === 'up') return true; return false; };
     });
+    if (o.extra) { var xp = ui.pill(o.extra[0], o.extra[1], false); xp.onnav = sorts.firstChild.onnav; sorts.appendChild(xp); }
     var gWin = deferWin(function (row) { for (var k = Math.max(0, (row - 1) * COLS); k < Math.min(cells.length, (row + 3) * COLS); k++) ui.load(cells[k].card); });
     function paint() { for (var i = 0; i < sorts.children.length; i++) sorts.children[i].classList.toggle('cur', sorts.children[i]._k === tab); }
     function addSkels(n) { for (var i = 0; i < n; i++) { var c = el('div', 'gcell'); c.appendChild(ui.skelCard('grid')); skels.push(c); grid.appendChild(c); } }
@@ -993,7 +987,8 @@
       root.classList.add('archive'); N.stage.dim(0.72);
       var m = el('div', 'center-msg'), text = el('div', 'm', N.t('listLogin'));
       var signIn = ui.btn(N.t('signIn'), function () { N.go('login', {}, { reset: true }); }, 'primary');
-      m.appendChild(text); m.appendChild(signIn); root.appendChild(m); N.nav.focus(signIn, true);
+      var ph = ui.btn(N.t('photos'), function () { N.go('photos'); }, ''); ph.style.marginTop = '20px'; // photos live on the TV, no account needed
+      m.appendChild(text); m.appendChild(signIn); m.appendChild(ph); root.appendChild(m); N.nav.focus(signIn, true);
       return {};
     }
     return pagedGrid(root, {
@@ -1002,8 +997,91 @@
       empty: { watchlist: 'emptyWatch', favorite: 'emptyFav' },
       fetch: function (group, page) { return N.lib.list(group, page); },
       hot: function (group, page) { return N.api.fresh('user_list', N.lib.listParams(group, page), N.api.P.list); },
-      retry: function () { N.go('mylist', {}, { replace: true }); }
+      retry: function () { N.go('mylist', {}, { replace: true }); },
+      extra: [N.t('photos'), function () { N.go('photos'); }]
     }, restore);
+  };
+
+  /* ================= Photos (captured in the player, stored by the background service) ================= */
+  S.photos = function (root) {
+    var dead = false, list = [], cards = [], view = null;
+    root.classList.add('archive', 'photos'); N.stage.dim(0.72);
+    var box = el('div', 'arch'); root.appendChild(box);
+    var head = el('div', 'head ah', N.t('photos')), cnt = el('small', 'tab', ''); head.appendChild(cnt); box.appendChild(head);
+    var grid = el('div', 'pgroups'); box.appendChild(grid);
+    box.reveal = function (e) { var ty = ui.vscroll(box, e._cell || e, 260); box.classList.toggle('scrolled', ty < 0); };
+    var sk = el('div', 'msg', N.t('loading')); sk.style.cssText = 'position:absolute;top:300px;inset-inline-start:184px'; root.appendChild(sk);
+
+    function caption(p) { return [p.title, p.sub, N.fmtTime(p.t)].filter(Boolean).join(' · '); }
+    // one section per title, the title with the newest photo first; list is re-ordered to match so the viewer browses the same way
+    function groups() {
+      var by = {}, out = [];
+      list.forEach(function (p) { var k = p.title || '—'; if (!by[k]) { by[k] = []; out.push({ title: k, items: by[k] }); } by[k].push(p); });
+      list = [].concat.apply([], out.map(function (g) { return g.items; }));
+      return out;
+    }
+    function lan(url) {
+      if (!url) return;
+      var qr = el('div', 'tk-qr pqr'), tile = el('div', 'tile');
+      try { var q = qrcode(0, 'M'); q.addData(url); q.make(); tile.innerHTML = q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }); } catch (e) {}
+      qr.appendChild(tile); qr.appendChild(el('div', 'cap', N.t('photosLan'))); qr.appendChild(el('div', 'cap url', url)); root.appendChild(qr);
+    }
+    function paint(focusIdx) {
+      grid.innerHTML = ''; cards = [];
+      cnt.textContent = list.length ? String(list.length) : '';
+      if (!list.length) {
+        var empty = el('div', 'list-empty'); empty.appendChild(el('div', 'm', N.t('photosEmpty')));
+        empty.appendChild(el('div', 'hint', N.t('photosHint'))); grid.appendChild(empty); N.nav.clear(); return;
+      }
+      groups().forEach(function (g) {
+        var h = el('div', 'sec-h', g.title), row = el('div', 'prow');
+        h.appendChild(el('small', 'tab', String(g.items.length))); grid.appendChild(h); grid.appendChild(row);
+        g.items.forEach(function (p) {
+          var i = cards.length, cell = el('div', 'pcell'), c = el('div', 'card f k-land'), im = el('img', 'im');
+          im.alt = ''; im.decoding = 'async'; im.onload = function () { im.classList.add('in'); }; im.src = N.snap.src(p.id, true);
+          c.appendChild(im); c._mq = ui.mq([p.sub, N.fmtTime(p.t)].filter(Boolean).join(' · '), 'lbl'); c.appendChild(c._mq); c._cell = cell;
+          c.onclick = function () { open(i); };
+          cell.appendChild(c); row.appendChild(cell); cards.push(c);
+        });
+      });
+      N.nav.focus(cards[Math.min(focusIdx || 0, cards.length - 1)], true);
+    }
+
+    /* full-screen viewer: Left/Right browse, OK on Delete asks first, Back closes */
+    function open(i) {
+      var v = el('div', 'pview'), im = el('img', ''), cap = el('div', 'pcap'), del = ui.btn(N.t('delete'), ask, 'danger');
+      v.appendChild(im); v.appendChild(cap); v.appendChild(del); document.body.appendChild(v);
+      view = { el: v, i: i, show: function (k) {
+        view.i = (k + list.length) % list.length; var p = list[view.i];
+        im.src = N.snap.src(p.id); cap.textContent = caption(p) + '   ' + (view.i + 1) + ' / ' + list.length;
+      } };
+      del.onnav = function (dir) { if (dir === 'left' || dir === 'right') { view.show(view.i + ui.step(dir)); return true; } return true; };
+      view.show(i); N.nav.pushScope(v); N.nav.focus(del, true);
+      function ask() {
+        var p = list[view.i];
+        N.confirm({ title: N.t('photoDelTitle'), body: caption(p), ok: N.t('delete'), danger: true, onOk: function () {
+          N.snap.del(p.id);
+          list.splice(view.i, 1);
+          if (!list.length) { close(); paint(0); return; }
+          view.show(view.i); N.nav.focus(del, true);
+        } });
+      }
+    }
+    function close() {
+      if (!view) return false;
+      var i = view.i; N.nav.popScope(); view.el.parentNode.removeChild(view.el); view = null;
+      paint(i); return true;
+    }
+
+    N.snap.list(function (e, r) {
+      if (dead) return; root.removeChild(sk);
+      if (e) {
+        var m = el('div', 'center-msg'); m.appendChild(ui.icon('warn')); m.appendChild(el('div', 'm', N.t('photosNA'))); root.appendChild(m); return;
+      }
+      list = (r.photos || []).slice().reverse(); // newest first
+      lan(r.lan); paint(0);
+    });
+    return { destroy: function () { dead = true; if (view) { N.nav.popScope(); view.el.parentNode.removeChild(view.el); view = null; } }, back: close };
   };
 
   /* ================= Settings ================= */

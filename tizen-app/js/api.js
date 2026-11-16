@@ -186,7 +186,7 @@
     }
     cstore = {}; N.store.del('ac');
   }
-  function psave() { if (!flushT) flushT = setTimeout(pflush, 2000); }
+  function psave() { if (!flushT) flushT = setTimeout(pflush, 8000); }
   try { document.addEventListener('visibilitychange', function () { if (document.hidden && flushT) pflush(); }); } catch (e) {}
   function cput(key, v, o, ep) {
     if (o.user && ep !== epoch) return; // the session changed while the request was in flight
@@ -359,7 +359,7 @@
   }
   api.P = {
     home: { ttl: 90000, swr: 3 * HR, sie: 7 * 24 * HR, persist: true, user: true, slim: slimHome },
-    single: { ttl: 10 * MIN, swr: 24 * HR, sie: 7 * 24 * HR, persist: true, user: true },
+    single: { ttl: 10 * MIN, swr: 24 * HR, user: true }, // memory only: persisting re-stringified a big blob on the main thread
     menu: { ttl: 6 * HR, swr: 7 * 24 * HR, sie: 7 * 24 * HR, persist: true },
     list: { ttl: 5 * MIN, swr: HR, user: true },
     search: { ttl: 10 * MIN, user: true },
@@ -389,10 +389,8 @@
     function done(bad) { pf.busy = false; pf.last = Date.now(); if (bad) pf.pause = pf.last + PF_PAUSE; var n = pf.next; pf.next = null; if (n) pfRun(n); }
     api.single(p.id, { bg: true, front: true, noRetry: true, persist: false }).then(function (post) { warmImg(N.ui && N.ui.coverUrl(post)); done(); }, function () { done(true); });
   }
-  pf.focus = function (p) {
-    clearTimeout(pf.t); pf.t = null; pf.next = null;
-    if (p && p.id) pf.t = setTimeout(function () { pf.t = null; pfRun(p); }, 400);
-  };
+  // off: on real TVs the extra fetch + JSON parse + image decode while browsing cost more frames than it saved
+  pf.focus = function () {};
   pf.cancel = function () { clearTimeout(pf.t); pf.t = null; pf.next = null; };
 
   // helpers over post objects

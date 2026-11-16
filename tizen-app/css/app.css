@@ -505,7 +505,7 @@ html[lang=fa] #subtitle{line-height:1.6}
 #player-spin{position:absolute;left:924px;top:504px;width:72px;height:72px;border-radius:50%;border:6px solid rgba(255,255,255,.15);border-top-color:var(--accent);z-index:8;animation:spin 900ms linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 #player-menu{position:absolute;top:0;inset-inline-end:0;width:640px;height:1080px;overflow:hidden;background:rgba(14,16,22,.96);z-index:7;transform:translateX(calc(var(--dir) * 100%));transition:transform 240ms var(--e-out);will-change:transform;visibility:hidden}
-#player-menu .pm-in{position:relative;padding:64px 40px;transition:transform 160ms var(--e-out);will-change:transform}
+#player-menu .pm-in{position:relative;padding:0 40px 40px;transition:transform 160ms var(--e-out);will-change:transform}
 #player-menu.open{transform:none;transition:transform var(--d-page) var(--e-emph);visibility:visible}
 #player-menu .h{font-size:var(--t-cap);color:var(--text-2);margin:20px 0 12px;padding-inline:12px}
 #player-menu .opt{height:72px;display:flex;align-items:center;padding-inline-start:64px;padding-inline-end:20px;border-radius:var(--r-btn);font-size:var(--t-body-l);margin-bottom:6px;position:relative}
@@ -620,3 +620,34 @@ body.lite .card .im,body.lite .uimg{transition-duration:120ms}
 body.lite .skel-wrap,body.lite .bb-i{animation:none!important}
 body.lite .eptrack-w,body.lite #player-eps,body.lite .rv-body,body.lite .mq-on{-webkit-mask-image:none!important}
 body.lite #splash .bloom{display:none}
+
+/* ---------- photos ---------- */
+.pgroups{position:absolute;top:170px;inset-inline-start:0;width:1500px}
+.pgroups .sec-h small{font-size:var(--t-body);font-weight:400;color:var(--text-2);margin-inline-start:16px}
+.prow{display:flex;flex-wrap:wrap;margin-inline-start:var(--start)}
+.pcell{width:380px;height:270px;margin-inline-end:32px;margin-bottom:32px}
+.prow .card.k-land{width:380px;height:214px;background:var(--surface)}
+.prow .card .im{object-fit:cover}
+.pqr{position:absolute;top:250px;inset-inline-end:110px}
+.pqr .cap.url{margin-top:6px;color:var(--text-1);direction:ltr}
+.pview{position:fixed;left:0;top:0;width:1920px;height:1080px;z-index:100;background:#000}
+.pview img{position:absolute;left:0;top:0;width:1920px;height:1080px;object-fit:contain}
+.pview .pcap{position:absolute;bottom:56px;inset-inline-start:80px;max-width:1300px;font-size:var(--t-body);color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 2px 8px #000}
+.pview .btn{position:absolute;bottom:40px;inset-inline-end:80px}
+#photomode{position:absolute;left:0;top:0;width:1920px;height:1080px;z-index:20}
+#photomode canvas{position:absolute;left:0;top:0;width:1920px;height:1080px;opacity:0}
+#photomode.ready canvas{opacity:1}
+#photomode .pm-info{position:absolute;left:0;bottom:0;width:1920px;padding:28px 80px;box-sizing:border-box;background:linear-gradient(transparent,rgba(0,0,0,.75));font-size:var(--t-body);color:var(--text-1);white-space:pre;unicode-bidi:plaintext;text-align:start}
+#photomode .pm-spin{position:absolute;left:924px;top:504px;width:72px;height:72px;border-radius:50%;border:6px solid rgba(255,255,255,.15);border-top-color:var(--accent);animation:spin 900ms linear infinite;opacity:0}
+#photomode.busy .pm-spin{opacity:1}
+#photomode::after{content:"";position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none}
+#photomode.flash::after{animation:pmflash 400ms var(--e-out)}
+@keyframes pmflash{from{opacity:.8}to{opacity:0}}
+#player-menu .pm-tabs{display:flex;justify-content:center;gap:8px;padding:56px 40px 0}
+#player-menu .pmt{width:88px;height:72px;display:flex;align-items:center;justify-content:center;border-radius:var(--r-btn);color:var(--text-2);position:relative}
+#player-menu .pmt .ico{font-size:34px}
+#player-menu .pmt.cur{color:var(--text-1)}
+#player-menu .pmt.cur::after{content:"";position:absolute;bottom:-10px;left:28px;right:28px;height:4px;border-radius:2px;background:var(--accent)}
+#player-menu .pmt.focus{color:var(--focus-ink)}
+#player-menu .pm-h{font-size:var(--t-cap);color:var(--text-2);margin:32px 52px 12px}
+#player-menu .pm-body{position:absolute;top:240px;bottom:0;inset-inline:0;overflow:hidden}

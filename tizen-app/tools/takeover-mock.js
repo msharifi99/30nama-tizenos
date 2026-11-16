@@ -36,6 +36,7 @@ global.tizen = {
 };
 
 process.env.WATCHER_CFG = path.join(require('os').tmpdir(), '30nama-takeover-mock.json');
+process.env.PHOTO_DIR = path.join(require('os').tmpdir(), '30nama-photos-mock');
 require(path.join(__dirname, '..', 'service', 'takeover.js')).onStart();
 console.log('service: http://127.0.0.1:8097/state');
 

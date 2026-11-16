@@ -73,7 +73,7 @@
     var src = c._src;
     im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); c._im = null; c._on = false; if (!c._mq) c._mq = c._pt; };
     im.src = src;
-    whenReady(im, function (ok) { if (!ok) return; mark(src); if (c._on && c._im === im && im.getAttribute('src') === src) im.classList.add('in'); });
+    im.onload = function () { mark(src); if (c._on && c._im === im) im.classList.add('in'); };
   };
   ui.unload = function (c) {
     if (!c._on) return; c._on = false;
@@ -262,7 +262,7 @@
   }
   function staticLite() {
     var y = modelYear();
-    return (navigator.hardwareConcurrency || 8) <= 2 || (navigator.deviceMemory || 8) <= 2 || (y > 0 && y <= 2017) || (+N.store.get('liteAuto', 0) || 0) >= 2;
+    return false; // auto-detection misfired on real TVs (animations gone): lite is opt-in only (Settings > Display)
   }
   function applyLite(on) { N.lite = !!on; document.body.classList.toggle('lite', !!on); }
   ui.setLite = function (v) {

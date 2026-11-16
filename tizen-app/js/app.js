@@ -60,7 +60,7 @@
   };
   rail.curKey = function () {
     var i = stack.length - 1, e = stack[i];
-    while (e && e.name === 'details' && i > 0) { i--; e = stack[i]; }
+    while (e && (e.name === 'details' || e.name === 'photos') && i > 0) { i--; e = stack[i]; }
     if (!e) return '';
     if (e.name === 'archive' && e.params && (e.params.slug === 'movies' || e.params.slug === 'series' || e.params.slug === 'anime')) return e.params.slug;
     return e.name;

@@ -103,8 +103,7 @@
   function isInput() { var a = document.activeElement; return a && a.tagName === 'INPUT'; }
 
   // key-repeat detection: halves move durations and defers heavy swaps (stage / billboard)
-  var lastKey = 0, fastT = null, fast = false, moveAt = 0;
-  function frameDone() { moveAt = 0; }
+  var lastKey = 0, fastT = null, fast = false;
   nav.settleFns = [];
   nav.isFast = function () { return fast; };
   nav.onSettle = function (fn) { nav.settleFns.push(fn); };
@@ -133,11 +132,6 @@
     if (isInput()) {
       if (k === K.IME_DONE || k === K.ENTER) { if (nav.cur && nav.cur.onenter) nav.cur.onenter(); e.preventDefault(); return; }
       if (k === K.LEFT || k === K.RIGHT) return; // caret movement
-    }
-    if (k >= 37 && k <= 40 && e.repeat) { // key-repeat: at most one move per rendered frame, the rest are dropped
-      var t = Date.now();
-      if (moveAt && t - moveAt < 120) { e.preventDefault(); return; }
-      moveAt = t; requestAnimationFrame(frameDone);
     }
     if (k === K.LEFT) { e.preventDefault(); nav.move('left'); }
     else if (k === K.RIGHT) { e.preventDefault(); nav.move('right'); }

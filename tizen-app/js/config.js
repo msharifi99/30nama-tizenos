@@ -24,7 +24,7 @@ N.config = {
 };
 N.keys = {
   ENTER: 13, BACK: 10009, LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ESC: 27, BACKSPACE: 8,
-  PLAYPAUSE: 10252, PLAY: 415, PAUSE: 19, STOP: 413, FF: 417, RW: 412, IME_DONE: 65376, IME_CANCEL: 65385
+  PLAYPAUSE: 10252, RED: 403, PLAY: 415, PAUSE: 19, STOP: 413, FF: 417, RW: 412, IME_DONE: 65376, IME_CANCEL: 65385
 };
 N.store = {
   get: function (k, d) { try { var v = localStorage.getItem('n30.' + k); return v === null ? d : JSON.parse(v); } catch (e) { return d; } },
