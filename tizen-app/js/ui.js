@@ -234,7 +234,8 @@
     track._total = x - gap; track._s = null;
   };
   ui.slideTo = function (track, x) {
-    var s = Math.max(0, x - START), max = Math.max(0, (track._total || 0) - 1824);
+    // Reserve 28px for focus enlargement and its ring at the far safe edge.
+    var s = Math.max(0, x - START), max = Math.max(0, (track._total || 0) - 1796);
     if (s > max) s = max;
     if (track._s === s) return; track._s = s;
     track.style.transform = 'translateX(' + (N.isRtl() ? s : -s) + 'px)';
@@ -296,5 +297,47 @@
     if (probed) return; probed = true;
     var o = N.store.get('lite', null);
     if (o !== true && o !== false && !N.lite) probeFrames();
+  };
+
+  // one-row pill strip (season tabs) that shows only the pills fitting in `room` px. The focused (or current) pill keeps
+  // its neighbour on each side in view, so moving to an edge pill shifts the strip by one pill; pills outside fade out.
+  ui.tabStrip = function (tabs, room) {
+    var first = 0; room = room || 1360;
+    tabs.reveal = function (t, now) {
+      var c = tabs.children, n = c.length, i = Array.prototype.indexOf.call(c, t), x = [], w = [], p = 0, k;
+      if (i < 0 || !t.offsetWidth) return; // not laid out yet
+      for (k = 0; k < n; k++) { w.push(c[k].offsetWidth); x.push(p); p += w[k] + 12; } // 12 = .tabs .pill+.pill margin
+      function end(f) { var e = f; while (e + 1 < n && x[e + 1] + w[e + 1] - x[f] <= room) e++; return e; }
+      if (first >= n) first = 0;
+      if (first > i - 1) first = Math.max(0, i - 1);
+      while (first < i && end(first) < Math.min(n - 1, i + 1)) first++;
+      while (first > 0 && x[n - 1] + w[n - 1] - x[first - 1] <= room) first--; // no empty room after the last pill
+      var e = end(first);
+      for (k = 0; k < n; k++) c[k].classList.toggle('out', k < first || k > e);
+      if (now) tabs.style.transition = 'none';
+      tabs.style.transform = first ? 'translateX(' + (N.isRtl() ? x[first] : -x[first]) + 'px)' : '';
+      if (now) { void tabs.offsetWidth; tabs.style.transition = ''; }
+    };
+  };
+
+  // Index-based grids remain predictable while their parent is animating.
+  // Spatial rectangles alone can skip rows or jump back to a distant control.
+  ui.gridNav = function (cards, index, cols, dir, edge) {
+    var next = index;
+    if (dir === 'left' || dir === 'right') {
+      var step = ui.step(dir);
+      if ((step < 0 && index % cols === 0) ||
+          (step > 0 && (index % cols === cols - 1 || index === cards.length - 1))) {
+        return edge ? edge(dir) : true;
+      }
+      next += step;
+    } else if (dir === 'up') {
+      if (index < cols) return edge ? edge(dir) : true;
+      next -= cols;
+    } else if (dir === 'down') {
+      if (Math.floor(index / cols) === Math.floor((cards.length - 1) / cols)) return true;
+      next = Math.min(cards.length - 1, index + cols);
+    }
+    return cards[next] || true;
   };
 })();

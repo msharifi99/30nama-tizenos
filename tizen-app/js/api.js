@@ -332,6 +332,94 @@
   }
   lib.listParams = function (group, page) { return { action: 'list', group: group, page: page || 1, orderby: 'add_list', order: 'DESC' }; };
   lib.list = function (group, page) { return api.cached('user_list', lib.listParams(group, page), { ttl: 300000, user: true }); };
+
+  /* Watch progress. The backend sometimes drops observer reports, so stream.continue_watching can point at an older episode.
+     wpLocal = what we last reported per post, wpServer = what the server last returned; both carry `at`, the time that value
+     last changed (for the server: when we first saw it). Details resumes from whichever is newer. */
+  var wp = N.wp = {}, WP_MAX = 100;
+  function wpRec(c, at) { return { file_id: String(c.file_id), time: Number(c.time) || 0, duration: Number(c.duration) || 0, at: at }; }
+  function wpSame(a, b) { return !!(a && b) && String(a.file_id) === String(b.file_id) && Math.floor(Number(a.time) || 0) === Math.floor(Number(b.time) || 0); }
+  function wpPut(key, postId, rec) {
+    var m = N.store.get(key, {}), ids = Object.keys(m);
+    m[String(postId)] = rec;
+    if (ids.length >= WP_MAX) {
+      ids.sort(function (a, b) { return (m[a].at || 0) - (m[b].at || 0); });
+      for (var i = 0; i <= ids.length - WP_MAX; i++) if (ids[i] !== String(postId)) delete m[ids[i]];
+    }
+    N.store.set(key, m);
+  }
+  wp.observe = function (postId, c) {
+    if (!postId || !c || !c.file_id) return;
+    var cur = wpRec(c, Date.now()), prev = N.store.get('wpServer', {})[String(postId)];
+    if (wpSame(prev, cur)) return;
+    // a first sighting has no known time: it must not win (or rank in Continue Watching) just for being new to us.
+    // Where it agrees with our own report the two are the same value anyway.
+    if (!prev) cur.at = 0;
+    wpPut('wpServer', postId, cur);
+  };
+  // compact copy of a post, enough for a Continue Watching card + billboard when the server's list lacks it
+  var wpPostSaved = {};
+  function wpSavePost(post) {
+    if (!post || !post.id || wpPostSaved[post.id]) return;
+    wpPostSaved[post.id] = 1;
+    var m = N.store.get('wpPosts', {}), loc = N.store.get('wpLocal', {}), po = post.options || {};
+    m[String(post.id)] = { id: post.id, title: post.title, plot: post.plot, image: post.image, score: post.score, info: post.info, genre: post.genre, options: { is_series: po.is_series } };
+    Object.keys(m).forEach(function (k) { if (k !== String(post.id) && !loc[k]) delete m[k]; });
+    N.store.set('wpPosts', m);
+  }
+  // record the server's current value first, so the local record written after it is always the newer one.
+  // `info` (season/episode) and `post` are only kept locally, never sent with the report.
+  wp.sync = function (p, info, post) {
+    return timeout(api.call('stream', { post_id: p.post_id, free_stream: 0 }, { noRetry: true }), 5000, 'stream').then(function (j) {
+      if (j && j.success && j.result) wp.observe(p.post_id, j.result.continue_watching);
+    }).catch(function () {}).then(function () {
+      var rec = wpRec(p, Date.now());
+      if (info && info.season) rec.season = info.season;
+      if (info && info.episode) rec.episode = info.episode;
+      wpPut('wpLocal', p.post_id, rec);
+      wpSavePost(post);
+    });
+  };
+  wp.pick = function (postId, c) {
+    wp.observe(postId, c);
+    var loc = N.store.get('wpLocal', {})[String(postId)], srv = N.store.get('wpServer', {})[String(postId)];
+    var r = loc && (!srv || loc.at >= srv.at) ? loc : srv;
+    return r ? { file_id: r.file_id, time: r.time, duration: r.duration } : null;
+  };
+  /* Home's Continue Watching: apply our newer local progress to the server's list. Entries where the local record wins
+     and disagrees with the server move up by the time we watched them (the server's order is kept among the rest);
+     recent local watches the server has never shown us are added from the saved post copy. A post the server did
+     show us before and now leaves out was removed or finished there, so it stays out.
+     Returns { posts, raw } with raw[i] describing posts[i]. */
+  var WP_ADD_MS = 14 * 864e5;
+  wp.cw = function (posts, raw) {
+    var loc = N.store.get('wpLocal', {}), now = Date.now(), seen = {}, front = [], rest = [];
+    posts.forEach(function (p, i) {
+      var r0 = raw[i] || p, c = r0.continue_watching || r0, id = String(p.id);
+      seen[id] = 1;
+      if (c && c.file_id) wp.observe(id, c);
+      var l = loc[id], srv = N.store.get('wpServer', {})[id];
+      if (l && (!srv || l.at >= srv.at) && !(c && c.file_id && wpSame(l, c))) {
+        var m = { file_id: l.file_id, time: l.time, duration: l.duration, season: l.season, episode: l.episode };
+        if (!m.season && c && String(c.file_id) === l.file_id) { m.season = c.season || (c.info && c.info.season); m.episode = c.episode || (c.info && c.info.episode); }
+        front.push({ p: p, r: { continue_watching: m }, at: l.at });
+      } else rest.push({ p: p, r: r0, at: (srv && srv.at) || 0 });
+    });
+    var saved = N.store.get('wpPosts', {});
+    Object.keys(loc).forEach(function (id) {
+      var l = loc[id], srv = N.store.get('wpServer', {})[id];
+      if (seen[id] || srv || !saved[id] || now - (l.at || 0) > WP_ADD_MS) return;
+      if (l.duration && l.time / l.duration >= 0.95) return; // finished: the server drops those too
+      front.push({ p: saved[id], r: { continue_watching: l }, at: l.at });
+    });
+    front.sort(function (a, b) { return b.at - a.at; });
+    var all = [], fi = 0, ri = 0;
+    while (fi < front.length || ri < rest.length) {
+      if (ri >= rest.length || (fi < front.length && front[fi].at >= rest[ri].at)) all.push(front[fi++]); else all.push(rest[ri++]);
+    }
+    return { posts: all.map(function (x) { return x.p; }), raw: all.map(function (x) { return x.r; }) };
+  };
+  wp.clear = function () { N.store.del('wpLocal'); N.store.del('wpServer'); N.store.del('wpPosts'); wpPostSaved = {}; };
   N.setSession = function (user) {
     var prev = N.session && N.session.token;
     N.session = { token: user.user_session, user: user };
@@ -340,7 +428,7 @@
   };
   N.logout = function (silent) {
     var p = N.isLoggedIn() ? api.call('logout', {}).catch(function () {}) : Promise.resolve();
-    N.session = null; N.store.del('session'); lib.clear(); api.dropUser();
+    N.session = null; N.store.del('session'); lib.clear(); api.dropUser(); wp.clear();
     if (!silent && N.onLogout) N.onLogout();
     return p;
   };

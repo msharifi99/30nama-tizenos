@@ -8,6 +8,12 @@
     var a = r.posts || r.items || r.list || (r instanceof Array ? r : []);
     return a.map(function (x) { return x && x.post ? x.post : x; }).filter(function (x) { return x && x.id; });
   }
+  // the raw entries behind extractPosts(r), index for index
+  function cwItems(r) {
+    if (!r) return [];
+    var a = r.posts || r.items || r.list || (r instanceof Array ? r : []);
+    return a.filter(function (x) { var p = x && x.post ? x.post : x; return p && p.id; });
+  }
   function userObj(r) { return (r && r.user_session) ? r : (r && r.user && r.user.user_session ? r.user : null); }
   function errorView(root, e, retry) {
     root.innerHTML = '';
@@ -125,7 +131,9 @@
       if (tmOn) { root.classList.add('tm'); N.tmdb.startHome(); tmH = N.tmdb.heroes(6, 3200).catch(function () { return []; }); }
       Promise.all([N.getHome(), cw, tmH]).then(function (res) {
         if (dead) return;
-        build(res[0], extractPosts(res[1]), res[1], res[2]);
+        // fold in our own newer progress (the backend sometimes drops reports)
+        var m = N.isLoggedIn() ? N.wp.cw(extractPosts(res[1]), cwItems(res[1])) : { posts: [], raw: [] };
+        build(res[0], m.posts, m.raw, res[2]);
         if (res[1] === undefined) cwAll.then(function (r) { if (!dead && r) lateCw(r); });
       }).catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
     }
@@ -135,10 +143,10 @@
     }
     // continue-watching answered after Home was drawn: slide the row in at the top (insertRowAt keeps the current view stable)
     function lateCw(raw) {
-      var ps = extractPosts(raw);
+      var m = N.wp.cw(extractPosts(raw), cwItems(raw)), ps = m.posts;
       if (!ps.length || defs.some(function (d) { return d.key === 'cw'; })) return;
       ps.forEach(function (p) { cwIds[p.id] = true; });
-      insertRowAt(makeRow(cwDef(ps, raw)), 0);
+      insertRowAt(makeRow(cwDef(ps, m.raw)), 0);
       if (heroes[heroIdx]) playBtn.lastChild.textContent = cwIds[heroes[heroIdx].id] ? N.t('resume') : N.t('play');
     }
     function cwNorm(x0, raw) {
@@ -372,7 +380,7 @@
     function setRow(ri) {
       var ty = 640 - (tops[ri] || 0); // ri === rowEls.length is the guest sign-in note: no row to mark current
       if (rowsTy !== ty) { rowsTy = ty; rowsEl.style.transform = 'translateY(' + ty + 'px)'; }
-      if (st.row !== ri || (rowEls[ri] && !rowEls[ri].classList.contains('cur'))) {
+      if (st.row !== ri || !rowEls[ri] || !rowEls[ri].classList.contains('cur')) {
         for (var k = 0; k < rowEls.length; k++) { rowEls[k].classList.toggle('past', k < ri); rowEls[k].classList.toggle('cur', k === ri); }
         st.row = ri; win(ri, mem[ri] || 0);
       }
@@ -488,7 +496,10 @@
       root.removeChild(sk);
       var items = lateP ? [] : (st && st.hls ? st.hls.slice() : []), waiting = !!lateP, autoPending = false;
       items.sort(ui.epCmp);
-      var cw = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null, resume = null;
+      // newest of our own last report and the server's continue_watching (the backend sometimes drops reports)
+      var srvCw = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null;
+      var cw = N.isLoggedIn() ? N.wp.pick(post.id, srvCw) : srvCw, resume = null;
+      if (cw && !items.some(function (it) { return it.info && String(it.info.file_id) === String(cw.file_id); })) cw = srvCw;
       var po = post.options || {}, isSeries = !!po.is_series;
       var tmOn = N.tmdb.enabled(), dpage = el('div', 'd-page'), col = el('div', 'det-col');
       if (tmOn) root.classList.add('tm');
@@ -564,6 +575,7 @@
           };
           tabs.appendChild(t);
         });
+        ui.tabStrip(tabs);
       }
       buildEps();
       // tile to focus when entering season s: the remembered episode (an index, never a node: tiles are rebuilt on every season switch), else the first
@@ -592,7 +604,7 @@
       }
       function showSeason(s, now) {
         if (s === curS) return; curS = s;
-        for (var q = 0; q < tabs.children.length; q++) tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s);
+        for (var q = 0; q < tabs.children.length; q++) if (tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s)) tabs.reveal(tabs.children[q], now);
         clearTimeout(swT); swT = null;
         if (now) { buildSeason(s); wrap.classList.remove('sw'); return; }
         wrap.classList.add('sw'); swT = setTimeout(function () { swT = null; buildSeason(s); wrap.classList.remove('sw'); }, 160);
@@ -807,8 +819,10 @@
     root.appendChild(hid);
 
     var res = el('div', 'results'), rh = el('div', 'rh'), rw = el('div', 'rgrid-w'), rg = el('div', 'rgrid');
-    rw.appendChild(rg); res.appendChild(rh); res.appendChild(rw); root.appendChild(res);
-    rw.reveal = function (e) { ui.vscroll(rw, e._cell || e, 300); };
+    var viewport = el('div', 'rgrid-viewport'), resultCards = [], keyboardMem = null;
+    var RESULT_COLS = 5; // Must match .rgrid width / (.rgrid .gcell width + margin) in app.css.
+    rw.appendChild(rg); viewport.appendChild(rw); res.appendChild(rh); res.appendChild(viewport); root.appendChild(res);
+    rw.reveal = function (e) { ui.vscroll(rw, e._cell || e, 20); };
 
     function key(label, cls, fn2) {
       var k = el('button', 'key f fl' + (cls ? ' ' + cls : ''));
@@ -817,8 +831,17 @@
     }
     function layout() {
       grid.innerHTML = ''; fn.innerHTML = ''; kb.className = 'kb ' + kbLang;
-      var L = KB[kbLang]; grid.style.width = (L.cols * 72) + 'px'; grid.dir = kbLang === 'fa' ? 'rtl' : 'ltr';
+      var L = KB[kbLang]; grid.style.width = (L.cols * 76) + 'px'; grid.dir = kbLang === 'fa' ? 'rtl' : 'ltr';
       L.keys.forEach(function (c) { grid.appendChild(key(c, '', function () { type(c); })); });
+      Array.prototype.forEach.call(grid.children, function (k, i) {
+        k.onnav = function (dir) {
+          // Keyboard order follows its own language, independently of the UI language.
+          var mapped = dir;
+          if ((kbLang === 'fa') !== N.isRtl() && (dir === 'left' || dir === 'right')) mapped = dir === 'left' ? 'right' : 'left';
+          if (dir === 'down' && Math.floor(i / L.cols) === Math.floor((L.keys.length - 1) / L.cols)) return fn.firstChild;
+          return ui.gridNav(Array.prototype.slice.call(grid.children), i, L.cols, mapped, function () { return panelEdge(dir, k); });
+        };
+      });
       var sp = key(N.t('space'), 'sp', function () { type(' '); });
       fn.appendChild(sp);
       fn.appendChild(key('⌫', '', function () { q = q.slice(0, -1); changed(); }));
@@ -827,10 +850,29 @@
       fn.appendChild(lk);
       var mic = key(ui.icon('mic'), '', function () { hid.value = q; N.nav.focus(hid); });
       fn.appendChild(mic);
-      fn.style.width = (L.cols * 72) + 'px';
+      Array.prototype.forEach.call(fn.children, function (k, i) {
+        k.onnav = function (dir) {
+          if (dir === 'up') return grid.children[Math.max(0, L.keys.length - L.cols + i)];
+          if (dir === 'down') return true;
+          return fn.children[i + (dir === 'right' ? 1 : -1)] || panelEdge(dir, k);
+        };
+      });
+      fn.style.width = (L.cols * 76) + 'px';
     }
+    function panelEdge(dir, cur) {
+      if (dir === 'left' || dir === 'right') {
+        if (ui.step(dir) > 0) { keyboardMem = cur; return resultCards[0] || true; }
+        N.rail.enter();
+      }
+      return true;
+    }
+    panel.onnav = function (dir, cur) {
+      if (dir === 'down') return true;
+      return panelEdge(dir, cur);
+    };
     function type(c) { if (q.length < 60) { q += c; changed(); } }
     function changed() {
+      seq++; clearTimeout(swT); rg.classList.remove('sw');
       qt.textContent = q; ph.style.display = q ? 'none' : '';
       clearTimeout(timer); timer = setTimeout(run, 500);
     }
@@ -839,7 +881,7 @@
     // physical keyboard (desktop testing / USB keyboards)
     function onKeyDown(e) {
       if (document.activeElement === hid || e.ctrlKey || e.altKey || e.metaKey || !e.key || e.key.length !== 1) return;
-      if (N.player.open || document.querySelector('.modal')) return;
+      if (N.player.open || N.rail.open || document.querySelector('.modal')) return;
       type(e.key.toLowerCase());
     }
     document.addEventListener('keydown', onKeyDown);
@@ -851,11 +893,22 @@
     function show(posts, header, msg) {
       clearTimeout(swT); rg.classList.add('sw');
       swT = setTimeout(function () {
-        if (dead) return; rg.innerHTML = ''; rh.textContent = header;
+        if (dead) return;
+        var restoreIndex = resultCards.indexOf(N.nav.cur);
+        rg.innerHTML = ''; resultCards = []; rh.textContent = header;
         if (msg) { var m = el('div', 'nores', msg); m.style.flexBasis = '100%'; m.style.position = 'relative'; m.style.top = '0'; m.style.marginBottom = '24px'; rg.appendChild(m); }
         posts.forEach(function (p, i) {
           var cell = ui.cell(p); if (i < 12) { cell.classList.add('fadein'); cell.style.animationDelay = (i * 15) + 'ms'; }
           cell.card.onclick = function () { N.go('details', { id: p.id }); };
+          resultCards.push(cell.card);
+          cell.card.onnav = function (dir) {
+            return ui.gridNav(resultCards, i, RESULT_COLS, dir, function (edge) {
+              if (edge === 'left' || edge === 'right') {
+                if (ui.step(edge) < 0) return keyboardMem && root.contains(keyboardMem) ? keyboardMem : grid.firstChild;
+              }
+              return true;
+            });
+          };
           cell.card.onfocus2 = function () {
             N.prefetch.focus(p); sWin.run(i);
           };
@@ -864,19 +917,21 @@
         for (var k = 0; k < rg.children.length && k < 12; k++) if (rg.children[k].card) ui.load(rg.children[k].card);
         rw.style.transition = 'none'; rw._ty = null; rw.style.transform = ''; void rw.offsetWidth; rw.style.transition = '';
         rg.classList.remove('sw');
+        if (restoreIndex >= 0) N.nav.focus(resultCards[Math.min(restoreIndex, resultCards.length - 1)] || grid.firstChild);
       }, 120);
     }
-    function popular(msg) {
-      N.getHome().then(function (h) { if (dead) return; var ps = (h.suggested && h.suggested.posts) || (h.movies && h.movies.posts) || []; show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
+    function popular(msg, generation) {
+      var my = generation === undefined ? seq : generation;
+      N.getHome().then(function (h) { if (dead || my !== seq) return; var ps = (h.suggested && h.suggested.posts) || (h.movies && h.movies.posts) || []; show(ps.slice(0, 15), N.t('popularNow'), msg); }).catch(function () {});
     }
     function run() {
       var qq = q.trim(); var my = ++seq;
-      if (!qq) { popular(''); return; }
+      if (!qq) { popular('', my); return; }
       N.api.cached('search', { query: qq, streamonly: 0, page: 1 }, N.api.P.search).then(function (r) {
         if (dead || my !== seq) return;
-        if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”'); return; }
+        if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”', my); return; }
         show(r.posts, N.t('topResults'), '');
-      }).catch(function (e) { if (!dead && my === seq) popular(N.t('error') + '. ' + N.t('tryAgain')); });
+      }).catch(function (e) { if (!dead && my === seq) popular(N.t('error') + '. ' + N.t('tryAgain'), my); });
     }
     layout(); popular('');
     N.nav.focus(grid.firstChild, true);
@@ -932,7 +987,7 @@
     function addSkels(n) { for (var i = 0; i < n; i++) { var c = el('div', 'gcell'); c.appendChild(ui.skelCard('grid')); skels.push(c); grid.appendChild(c); } }
     function clearSkels() { skels.forEach(function (s) { if (s.parentNode) s.parentNode.removeChild(s); }); skels = []; }
     function reset() {
-      gen++; page = 1; pages = 1; cells = []; grid.innerHTML = ''; skels = []; box.style.transition = 'none'; box._ty = null; box.style.transform = ''; void box.offsetWidth; box.style.transition = ''; box.classList.remove('scrolled');
+      gen++; loading = false; page = 1; pages = 1; cells = []; grid.innerHTML = ''; skels = []; box.style.transition = 'none'; box._ty = null; box.style.transform = ''; void box.offsetWidth; box.style.transition = ''; box.classList.remove('scrolled');
       wantIdx = 0; restoring = false; load();
     }
     function load() {
@@ -945,11 +1000,18 @@
         (r.posts || []).forEach(function (p) {
           var cell = ui.cell(p), idx = cells.length, c = cell.card;
           c.onclick = function () { N.go('details', { id: p.id }); };
+          c.onnav = function (dir) {
+            return ui.gridNav(cells.map(function (it) { return it.card; }), idx, COLS, dir, function (edge) {
+              if (edge === 'up') return sorts.firstChild;
+              if ((edge === 'left' || edge === 'right') && ui.step(edge) < 0) N.rail.enter();
+              return true;
+            });
+          };
           c.onfocus2 = function () {
             N.prefetch.focus(p);
             var row = Math.floor(idx / COLS), rows = Math.ceil(cells.length / COLS);
             gWin.run(row);
-            if (row >= rows - 2 && page < pages) { page++; load(); }
+            if (row >= rows - 2 && page < pages && !loading) { page++; load(); }
           };
           cells.push(cell); grid.appendChild(cell);
         });
@@ -960,10 +1022,10 @@
         for (var k = 0; k < Math.min(cells.length, 3 * COLS); k++) ui.load(cells[k].card);
         if (first && !restoring) N.nav.focus(cells[0] ? cells[0].card : sorts.firstChild, true);
         if (restoring) {
-          if (wantIdx < cells.length) { restoring = false; instant(root, function () { N.nav.focus(cells[wantIdx].card, true); }); }
+          if (wantIdx < cells.length) { restoring = false; instant(root, function () { N.nav.focus(cells[wantIdx].card); }); }
           else if (page < pages) { page++; load(); } else { restoring = false; N.nav.focus(cells[0] ? cells[0].card : sorts.firstChild, true); }
         }
-      }).catch(function (e) { loading = false; if (!dead && my === gen) { clearSkels(); if (!cells.length) errorView(root, e, function () { o.retry(); }); } });
+      }).catch(function (e) { if (!dead && my === gen) { loading = false; clearSkels(); if (!cells.length) errorView(root, e, function () { o.retry(); }); } });
     }
     load();
     return {
@@ -1010,7 +1072,7 @@
     var head = el('div', 'head ah', N.t('photos')), cnt = el('small', 'tab', ''); head.appendChild(cnt); box.appendChild(head);
     var grid = el('div', 'pgroups'); box.appendChild(grid);
     box.reveal = function (e) { var ty = ui.vscroll(box, e._cell || e, 260); box.classList.toggle('scrolled', ty < 0); };
-    var sk = el('div', 'msg', N.t('loading')); sk.style.cssText = 'position:absolute;top:300px;inset-inline-start:184px'; root.appendChild(sk);
+    var sk = el('div', 'msg', N.t('loading')); sk.style.cssText = 'position:absolute;top:300px;' + (N.isRtl() ? 'right' : 'left') + ':184px'; root.appendChild(sk);
 
     function caption(p) { return [p.title, p.sub, N.fmtTime(p.t)].filter(Boolean).join(' · '); }
     // one section per title, the title with the newest photo first; list is re-ordered to match so the viewer browses the same way

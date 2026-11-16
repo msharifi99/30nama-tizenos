@@ -383,6 +383,7 @@
   P.onEnded = function () { if (P.index + 1 < P.items.length) P.playIndex(P.index + 1); else P.close(); };
 
   /* ---------- progress reporting (observer) ---------- */
+  var wpChain = Promise.resolve(), wpBusy = 0;
   function sameEpisode(p) {
     var item = P.items[P.index], info = item && item.info;
     return !!(info && info.file_id !== undefined && String(info.file_id) === String(p.file_id));
@@ -416,7 +417,12 @@
     };
     // Details can use this immediately after Back, before a fresh stream response.
     P.last = { post_id: p.post_id, file_id: p.file_id, time: time, duration: duration };
-    sendReport(p, !!final, 0);
+    // N.wp.sync reads the server's value before storing ours. Reports stay in order on one chain; a heartbeat
+    // that finds the previous one still syncing is dropped (the next comes soon), final reports always queue.
+    if (wpBusy && !final) return;
+    wpBusy++;
+    function send() { wpBusy--; sendReport(p, !!final, 0); }
+    wpChain = wpChain.then(function () { return N.wp.sync(p, info, P.post); }).then(send, send);
   };
   P.reportNow = function () { if (P.be && P.be.time() > 1) P.report(true); };
 
@@ -645,7 +651,7 @@
         if (i === P.index) { t.classList.add('now'); t.appendChild(N.el('div', 'np', N.t('nowPlaying'))); }
         tr.appendChild(t); tiles.push(t);
       });
-      for (var q = 0; q < tabs.children.length; q++) tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s);
+      for (var q = 0; q < tabs.children.length; q++) if (tabs.children[q].classList.toggle('cur', tabs.children[q]._s === s) && tabs.reveal) tabs.reveal(tabs.children[q], !box.classList.contains('open'));
       hd.textContent = (multi ? '' : N.t('season') + ' ' + s + '  ·  ') + tiles.length + ' ' + N.t('episodes');
       N.ui.layoutTrack(tr, tiles, tiles.map(function () { return 360; }));
       N.ui.epTmdb(P.post, s, tiles);
@@ -663,6 +669,7 @@
       };
       tabs.appendChild(t);
     });
+    if (multi) N.ui.tabStrip(tabs);
     build(curS);
     box.classList.add('open'); epsOpen = true; N.nav.pushScope(box);
     N.nav.focus(target(), true); $('osd').classList.remove('off'); $('player').classList.add('osd-on');
