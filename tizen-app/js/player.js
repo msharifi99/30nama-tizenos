@@ -3,7 +3,7 @@
   var K = N.keys, $ = N.$, ui = N.ui;
   var P = N.player = {
     open: false, items: [], index: 0, post: null, be: null, paused: false,
-    cues: [], subLang: 'off', subCache: {}, hbTimer: null, tickTimer: null, osdTimer: null,
+    speed: 1, cues: [], subLang: 'off', subCache: {}, hbTimer: null, tickTimer: null, osdTimer: null,
     menuOpen: false, seekAcc: 0, seekTimer: null, skip: null, resume: null, last: null, reportT: null
   };
   var hasAV = function () { return !!(window.webapis && window.webapis.avplay); };
@@ -73,6 +73,9 @@
         return out;
       },
       setAudio: function (id) { try { av.setSelectTrack('AUDIO', id); } catch (e) {} },
+      // Speed: AVPlay's setSpeed() is documented for integer factors only (-8..8). Many models throw on 1.25/1.5
+      // (and some mute audio at 2x), so we try the value as given, and report failure so the caller can fall back to 1x.
+      setSpeed: function (x) { try { av.setSpeed(x); return true; } catch (e) { return false; } },
       stop: function () {
         try { av.stop(); } catch (e) {}
         try { av.close(); } catch (e) {}
@@ -98,7 +101,8 @@
         v.onerror = function () { P.onError('video error'); };
         v.onloadedmetadata = go;
         var src = N.proxied(url);
-        if (window.Hls && Hls.isSupported()) {
+        if (isDirectUrl(url)) { v.src = src; } // plain mp4/mkv file: no hls.js
+        else if (window.Hls && Hls.isSupported()) {
           hls = new Hls({ enableWorker: false });
           hls.on(Hls.Events.ERROR, function (ev, d) { if (d && d.fatal) P.onError('hls ' + d.details); });
           hls.on(Hls.Events.MANIFEST_PARSED, function () { setTimeout(go, 0); });
@@ -116,6 +120,7 @@
         return hls.audioTracks.map(function (t, i) { return { id: i, label: langName(t.lang) || t.name || ('Track ' + (i + 1)) }; });
       },
       setAudio: function (id) { if (hls) hls.audioTrack = id; },
+      setSpeed: function (x) { try { v.playbackRate = x; v.defaultPlaybackRate = x; return true; } catch (e) { return false; } },
       stop: function () {
         try { v.pause(); } catch (e) {}
         if (hls) { hls.destroy(); hls = null; }
@@ -134,34 +139,71 @@
     return entryUrl(e['default'] || e.file || e.url || e.src || e.link || e.m3u8 || e.path || e.source);
   }
   var isDirectUrl = function (u) { return /\.(mkv|mp4|m4v)([?#]|$)/i.test(String(u)); };
-  // best playable download file ("Max"): see N.direct.cands; P.failed = urls already tried-and-failed for this item
-  P.failed = {};
-  function bestDirect(m) { var c = N.direct.cands(m, P.failed)[0]; return c && c.url; }
+  var trim = function (s) { return N.direct.trim(s); };
+  var hOfLabel = function (e) { return parseInt(String(e && e.label || '').replace(/\D/g, ''), 10) || 0; };
+  var isAuto = function (e) { return !!e && /^(auto|خودکار)$/i.test(String(e.label || '')); };
+  // stream (HLS) entries of a quality list: everything that is not a download file
+  function hlsEntries(m) {
+    var out = [];
+    if (!(m instanceof Array)) { var u0 = entryUrl(m); return u0 ? [{ url: trim(u0), label: 'HLS' }] : out; }
+    m.forEach(function (e) { var u = entryUrl(e); if (u && !(e && e.direct)) out.push({ url: trim(u), label: (e && e.label) || 'HLS', e: e }); });
+    return out;
+  }
+  P.hasHls = function (item) { return hlsEntries(item && item.file && item.file.m3u8).length > 0; };
+  P.hasDirect = function (item) { var m = item && item.file && item.file.m3u8; return m instanceof Array && m.some(function (e) { return e && e.direct; }); };
+  P.playable = function (item) { return P.hasHls(item) || P.hasDirect(item); };
+  // persisted preferred quality: 'max' | '1080' | '720' | '480'; unset -> max when download files play first, else 1080
+  P.qPref = function () {
+    var v = String(N.store.get('qPref', ''));
+    return v === 'max' || v === '1080' || v === '720' || v === '480' ? v : (P.dlMode() === 'auto' ? 'max' : '1080');
+  };
+  // download files this backend may play for m, in play order for pref (default: the saved one). P.failed = urls already failed for this item.
+  // AVPlay: unless the mode is 'off' (then only when the item has no stream). <video>: only as the no-stream fallback, .mp4 first.
+  P.directOrder = function (m, pref) {
+    if (!(m instanceof Array)) return [];
+    var noHls = !hlsEntries(m).length;
+    if (hasAV() ? (P.dlMode() === 'off' && !noHls) : !noHls) return [];
+    var cs = N.direct.cands(m, P.failed); pref = pref || P.qPref();
+    if (hasAV()) return N.direct.order(cs, pref);
+    var mp4 = cs.filter(function (x) { return !!(x.e.p && x.e.p.ext === 'mp4'); });
+    return N.direct.order(mp4, pref).concat(N.direct.order(cs.filter(function (x) { return mp4.indexOf(x) < 0; }), pref));
+  };
+  // preferred stream entry; 'Auto' only when no fixed quality exists
+  function pickHls(m, pref) {
+    var fixed = hlsEntries(m).filter(function (x) { return !isAuto(x.e); }), c = N.direct.pickTier(fixed, function (x) { return hOfLabel(x); }, pref);
+    if (c) return c.url;
+    var au = hlsEntries(m).filter(function (x) { return isAuto(x.e); })[0];
+    return au && au.url;
+  }
+  // HLS playlist photo mode reads frames from. Download files (Max) are usually 10-bit HEVC, which this TV can't decode in a
+  // readable way (WebCodecs HEVC errors, ffmpeg.wasm ran at 3 fps), so they borrow the best stream of the same title.
+  P.snapUrl = function () {
+    if (!P.curDirect) return P.curUrl;
+    var item = P.items[P.index], m = item && item.file && item.file.m3u8;
+    return (m instanceof Array && pickHls(m, '1080')) || null;
+  };
   // noDirect: HLS only (used for the fallback after a direct file fails)
   P.pickUrl = function (m, noDirect) {
     if (!(m instanceof Array)) return entryUrl(m);
-    var mode = P.dlMode(), dl = hasAV() && !noDirect && mode !== 'off' ? bestDirect(m) : null;
-    if (dl && mode === 'auto') return dl;
-    // Always prefer the highest fixed quality (e.g. 2160p); Auto only as fallback
-    var best = null, bestH = -1, auto = null, i, e, u;
-    for (i = 0; i < m.length; i++) {
-      e = m[i]; u = entryUrl(e); if (!u || (e && e.direct)) continue;
-      if (e && /^(auto|خودکار)$/i.test(String(e.label || ''))) { auto = u; continue; }
-      var h = parseInt(String(e && e.label || '').replace(/\D/g, ''), 10) || 0;
-      if (h > bestH) { best = u; bestH = h; }
-    }
-    return best || auto || dl;
+    var dl = noDirect ? [] : P.directOrder(m), hls = pickHls(m, P.qPref());
+    if (dl.length && (P.dlMode() === 'auto' || !hls)) return dl[0].url;
+    return hls || (dl[0] && dl[0].url);
   };
-  // download files setting: 'off' (not fetched/listed) | 'menu' (Quality menu only) | 'auto' (play best file first)
+  // download files setting: 'off' (not listed, unless there is no stream) | 'menu' (Quality menu only) | 'auto' (play best file first)
   P.dlMode = function () { var v = N.store.get('dlMode', null); if (v === null) v = N.store.get('preferDl', false) === true ? 'auto' : 'menu'; return v; };
-  // quality entries the current backend can play
+  // Quality menu entries: {url, label, key} key = value saved as qPref when picked (null = don't save); max marks the "Max" row
   P.qualities = function (item) {
-    var m = item && item.file && item.file.m3u8, out = [];
+    var m = item && item.file && item.file.m3u8, out = [], mx = P.directOrder(m, 'max')[0], tiers = [];
     if (!(m instanceof Array)) return out;
-    m.forEach(function (e) { var u = entryUrl(e); if (u && !(e && e.direct)) out.push({ url: String(u).replace(/^\s+|\s+$/g, ''), label: (e && e.label) || 'HLS' }); });
-    var c = hasAV() && P.dlMode() !== 'off' ? N.direct.cands(m, P.failed)[0] : null; // one "Max" entry: best playable download file
-    if (c) out.unshift({ url: c.url, label: N.t('maxQ') + ' · ' + (N.direct.short(c.e.p) || 'MKV'), max: true });
-    return out;
+    if (mx) {
+      tiers.push({ url: mx.url, label: N.t('maxQ') + ' · ' + (N.direct.short(mx.e.p) || 'MKV'), key: 'max', max: true });
+      ['1080', '720', '480'].forEach(function (t) {
+        var c = P.directOrder(m, t)[0];
+        if (c && String(c.e.h) === t) tiers.push({ url: c.url, label: t + 'p · ' + N.t('fileQ'), key: t });
+      });
+    }
+    hlsEntries(m).forEach(function (x) { out.push({ url: x.url, label: x.label + (tiers.length ? ' · ' + N.t('streamQ') : ''), key: isAuto(x.e) ? null : N.direct.tierOf(hOfLabel(x)) || null }); });
+    return tiers.concat(out);
   };
 
   /* ---------- subtitles ---------- */
@@ -252,16 +294,29 @@
     clearTimeout(P.reportT);
     if (P.be) P.be.stop();
     if (!o.keepFail) P.failed = {};
+    if (!o.keepSub) P.speed = 1; // speed resets per playback (new title / episode); quality switches and fallbacks keep it
     P.index = i; P.paused = false; P.cues = []; P.subLang = o.keepSub ? P.subLang : N.store.get('sub', 'off');
     $('subtitle').textContent = ''; P.hideSkip(); P.hideUpNext(true); P.closeEps(true);
     var m3u8 = o.url || (item.file && P.pickUrl(item.file.m3u8));
-    if (typeof m3u8 === 'string') m3u8 = m3u8.replace(/^\s+|\s+$/g, '');
+    if (typeof m3u8 === 'string') m3u8 = trim(m3u8);
     if (!m3u8 || typeof m3u8 !== 'string') { var raw = ''; try { raw = JSON.stringify(item.file && item.file.m3u8).slice(0, 160); } catch (e) {} N.toast(N.t('noStream') + ' ' + raw, 6000); return P.close(); }
+    // download file: make sure it really holds this episode (some uploads carry the wrong SxxEyy); swap to the right file, or skip it
+    if (isDirectUrl(m3u8) && !o.verified) {
+      var tok = P.vTok = {}; P.spin(true);
+      N.direct.resolve(P.items, i, m3u8).then(function (u) {
+        if (P.vTok !== tok || !P.open) return;
+        var ok = !!u; // resolve's answer is already checked; the next pick after a skip is not
+        if (!u) { P.failed[m3u8] = 1; u = P.pickUrl(item.file.m3u8); }
+        P.playIndex(i, Object.assign({}, o, { url: u, verified: ok, keepFail: true }));
+      });
+      return;
+    }
+    P.vTok = null;
     $('osd-title').textContent = N.title(P.post);
     $('osd-sub').textContent = seriesLine(item, i);
     $('osd-hint').textContent = P.items.length > 1 ? N.t('hintPlayerEps') : N.t('hintPlayer');
     var start = 0, info = item.info || {};
-    if (P.resume && String(P.resume.file_id) === String(info.file_id)) start = Number(P.resume.time) || 0;
+    if (P.resume && (P.resume.idx === i || (info.file_id !== undefined && String(P.resume.file_id) === String(info.file_id)))) start = Number(P.resume.time) || 0;
     P.resume = null;
     if (o.start !== undefined) start = o.start;
     P.curUrl = m3u8; P.curDirect = isDirectUrl(m3u8); P.loadStart = start; P.subOffV = P.subOff();
@@ -275,7 +330,7 @@
       P.loading = false; clearTimeout(P.loadT);
       var subs = availableSubs(item);
       var want = P.subLang; if (want !== 'off' && subs.indexOf(want) < 0) want = 'off';
-      P.setSub(want); P.showOsd();
+      P.setSub(want); P.applySpeed(P.speed, true); P.showOsd();
       // The first regular heartbeat is 10 s away. Report shortly after playback
       // begins so a newly autoplayed episode is persisted even when it is exited
       // before that first heartbeat.
@@ -286,6 +341,15 @@
     P.seekAcc = 0; P.seekN = 0; P.seekDir = 0; $('scrub').classList.remove('seeking');
     P.tick();
   };
+  // apply playback speed to the backend; if it refuses (AVPlay fractional), revert to 1x and tell the user
+  P.applySpeed = function (x, quiet) {
+    if (!P.be || !P.be.setSpeed) return false;
+    if (x === 1 && quiet) return true; // nothing to restore
+    if (P.be.setSpeed(x)) { P.speed = x; return true; }
+    P.speed = 1; P.be.setSpeed(1);
+    if (!quiet) N.toast(N.t('speedNA'), 3000);
+    return false;
+  };
   P.close = function () {
     if (!P.open) return;
     // a throw here would leave P.open set and every later Back stuck on a dead player
@@ -293,7 +357,7 @@
     clearInterval(P.hbTimer); clearInterval(P.tickTimer); clearTimeout(P.osdTimer); clearTimeout(P.seekTimer); clearTimeout(P.loadT); clearTimeout(P.reportT);
     try { if (P.be) P.be.stop(); } catch (e) {}
     P.be = null; P.loading = false;
-    P.closeMenu(true); P.closeEps(true); P.hideUpNext(true); P.hideSkip();
+    N.snap.close(); P.closeMenu(true); P.closeEps(true); P.hideUpNext(true); P.hideSkip();
     P.open = false; $('player').classList.add('hidden'); document.body.classList.remove('playing');
     $('player').classList.remove('osd-on'); $('osd').classList.add('off');
     $('subtitle').textContent = '';
@@ -301,16 +365,18 @@
     if (N.onPlayerClosed) N.onPlayerClosed();
   };
   P.onError = function (m) {
-    // a direct file failed: try the next-ranked download file (each URL once), then fall back to the best HLS entry at the same position
+    // a direct file failed: try the next download file (same height first, each URL once), then fall back to the best HLS entry at the same position
     if (P.open && P.curDirect) {
-      var item = P.items[P.index], t = Math.max((P.be && P.be.time()) || 0, P.loadStart || 0);
-      P.failed[String(P.curUrl).replace(/^\s+|\s+$/g, '')] = 1;
-      var nx = item && item.file && bestDirect(item.file.m3u8);
-      if (nx) { P.playIndex(P.index, { url: nx, start: t, keepSub: true, keepFail: true }); return; }
-      var u = item && item.file && P.pickUrl(item.file.m3u8, true);
+      var item = P.items[P.index], t = Math.max((P.be && P.be.time()) || 0, P.loadStart || 0), cm = item && item.file && item.file.m3u8, fh = 0;
+      P.failed[trim(P.curUrl)] = 1;
+      if (cm instanceof Array) cm.forEach(function (e) { if (e && e.direct && trim(e['default'] || e.url || '') === trim(P.curUrl)) fh = e.h || 0; });
+      var nx = P.directOrder(cm), same = nx.filter(function (x) { return (x.e.h || 0) === fh; });
+      nx = same.concat(nx.filter(function (x) { return same.indexOf(x) < 0; }))[0];
+      if (nx) { P.playIndex(P.index, { url: nx.url, start: t, keepSub: true, keepFail: true }); return; }
+      var u = item && item.file && P.pickUrl(cm, true);
       if (u && !isDirectUrl(u)) {
         N.toast(N.t('dlFallback'), 4000);
-        P.playIndex(P.index, { url: String(u).replace(/^\s+|\s+$/g, ''), start: t, keepSub: true }); return;
+        P.playIndex(P.index, { url: trim(u), start: t, keepSub: true }); return;
       }
     }
     P.loading = false; clearTimeout(P.loadT); N.toast(N.t('playErr') + ': ' + m, 6000); P.spin(false); P.showOsd(); };
@@ -320,7 +386,7 @@
   var wpChain = Promise.resolve(), wpBusy = 0;
   function sameEpisode(p) {
     var item = P.items[P.index], info = item && item.info;
-    return !!(info && String(info.file_id) === String(p.file_id));
+    return !!(info && info.file_id !== undefined && String(info.file_id) === String(p.file_id));
   }
   function sendReport(p, final, tryNo) {
     N.api.call('observer', p).then(function (j) {
@@ -336,9 +402,12 @@
     });
   }
   P.report = function (final) {
-    if (!P.be || !N.isLoggedIn() || P.loading) return;
+    if (!P.be || P.loading) return;
     var item = P.items[P.index]; if (!item) return;
     var info = item.info || {}, u = N.session.user || {};
+    try { N.progress.save(info.post_id || (P.post && P.post.id), item, P.be.time(), P.be.duration()); } catch (e) {}
+    if (!N.isLoggedIn()) return;
+    if (info.file_id === undefined || info.file_id === null || info.file_id === '') return; // synthesized from download links: nothing to report against
     var time = Math.floor(P.be.time()), duration = Math.floor(P.be.duration());
     if (!isFinite(time) || !isFinite(duration) || time < 1 || duration <= 0) return;
     var p = {
@@ -479,38 +548,77 @@
   };
 
   /* ---------- menu (audio / subs) : end-side sheet ---------- */
+  // Up menu: a row of icon tabs (quality, audio, speed, subtitles, photo mode); the focused tab shows its options below.
   P.openMenu = function () {
-    var m = $('player-menu'); m.innerHTML = ''; var item = P.items[P.index];
-    var w = N.el('div', 'pm-in'); m.appendChild(w); // clipped by the sheet; scrolled with translateY as focus moves (same as the other vertical panes)
-    w.reveal = function (e) { ui.vscroll(w, e, 220); };
-    function section(title, opts, onPick) {
-      if (title) w.appendChild(N.el('div', 'h', title));
-      opts.forEach(function (o) {
-        var b = N.el('div', 'opt f fl' + (o.sel ? ' sel' : '')); b.appendChild(N.ui.icon('check')); b.appendChild(N.el('span', '', o.label));
-        b.onclick = function () { onPick(o); P.closeMenu(); };
-        w.appendChild(b);
-      });
+    var m = $('player-menu'); m.innerHTML = ''; var item = P.items[P.index], tabs = [], cur = null;
+    var bar = N.el('div', 'pm-tabs'), head = N.el('div', 'pm-h'), body = N.el('div', 'pm-body'), w = N.el('div', 'pm-in');
+    m.appendChild(bar); m.appendChild(head); m.appendChild(body); body.appendChild(w);
+    w.reveal = function (e) { ui.vscroll(w, e, 160); }; // clipped by pm-body; scrolled with translateY as focus moves
+    function opts(list, onPick) {
+      return function () {
+        list.forEach(function (o) {
+          var b = N.el('div', 'opt f fl' + (o.sel ? ' sel' : '')); b.appendChild(N.ui.icon('check')); b.appendChild(N.el('span', '', o.label));
+          b.onclick = function () { onPick(o); P.closeMenu(); };
+          w.appendChild(b);
+        });
+      };
+    }
+    function tab(key, icon, title, fill, enter) { tabs.push({ key: key, icon: icon, title: title, fill: fill, enter: enter }); }
+
+    var q = P.qualities(item), urls = {}, pf = P.qPref(), qc = null;
+    q.forEach(function (x) { urls[x.url] = 1; if (x.url === P.curUrl && (!qc || x.key === pf)) qc = x; }); // equal URLs (Max = 1080p file): mark the row matching the saved preference
+    if (Object.keys(urls).length > 1) {
+      q.forEach(function (x) { x.sel = x === qc; });
+      tab('quality', 'hd', N.t('quality'), opts(q, function (o) {
+        if (o.key) N.store.set('qPref', o.key);
+        if (!o.sel) P.playIndex(P.index, { url: o.url, start: P.be.time(), keepSub: true });
+      }));
     }
     var audio = P.be.audioTracks();
-    if (audio.length) section(N.t('audio'), audio, function (o) { P.be.setAudio(o.id); });
-    var q = P.qualities(item);
-    if (q.length > 1) {
-      q.forEach(function (x) { x.sel = x.max ? !!P.curDirect : x.url === P.curUrl; });
-      section(N.t('quality'), q, function (o) { if (!o.sel) P.playIndex(P.index, { url: o.url, start: P.be.time(), keepSub: true }); });
-    }
+    if (audio.length) tab('audio', 'audio', N.t('audio'), opts(audio, function (o) { P.be.setAudio(o.id); }));
+    tab('speed', 'speed', N.t('speed'), opts([1, 1.25, 1.5, 2].map(function (x) { return { id: x, label: x + 'x', sel: P.speed === x }; }), function (o) { P.applySpeed(o.id); }));
     var sopts = [{ id: 'off', label: N.t('off'), sel: P.subLang === 'off' }];
     availableSubs(item).forEach(function (l) { sopts.push({ id: l, label: l === 'en' ? N.t('english') : N.t('persian'), sel: P.subLang === l }); });
-    section(N.t('subtitles'), sopts, function (o) { N.store.set('sub', o.id); P.setSub(o.id); });
-    if (P.subLang !== 'off') {
+    var subFill = opts(sopts, function (o) { N.store.set('sub', o.id); P.setSub(o.id); });
+    tab('subs', 'cc', N.t('subtitles'), function () {
+      subFill();
+      if (P.subLang === 'off') return;
       var r = N.el('div', 'opt f fl sync'), val = N.el('span', 'v');
-      var paint = function () { var v = P.subOffV || 0; val.textContent = '‹ ' + (v > 0 ? '+' : '') + v.toFixed(1) + 's ›'; };
+      var paint = function () { var v = P.subOffV || 0; val.textContent = '\u2039 ' + (v > 0 ? '+' : '') + v.toFixed(1) + 's \u203a'; };
       r.appendChild(N.ui.icon('check')); r.appendChild(N.el('span', '', N.t('subSync'))); r.appendChild(val); paint();
       r.onnav = function (dir) { if (dir === 'left' || dir === 'right') { P.setSubOff((P.subOffV || 0) + 0.5 * ui.step(dir)); paint(); return true; } return false; };
       r.onclick = function () { P.setSubOff(0); paint(); };
       w.appendChild(r); w.appendChild(N.el('div', 'hint', N.t('subSyncHint')));
+    });
+    if (N.snap.can()) tab('photo', 'camera', N.t('photoMode'), function () {
+      var b = N.el('div', 'opt f fl'); b.appendChild(N.ui.icon('camera')); b.appendChild(N.el('span', '', N.t('pmOpen')));
+      b.onclick = function () { N.snap.open(); };
+      w.appendChild(b);
+    }, function () { N.snap.open(); });
+
+    function show(t) {
+      if (cur === t) return; cur = t; P.menuTab = t.key;
+      tabs.forEach(function (x) { x.el.classList.toggle('cur', x === t); });
+      head.textContent = t.title; w.innerHTML = ''; w._ty = null; w.style.transform = ''; t.fill();
+      var first = w.querySelector('.opt');
+      if (first) { var own = first.onnav; first.onnav = function (dir) { if (dir === 'up') return t.el; return own ? own(dir) : false; }; }
     }
+    function into() { return w.querySelector('.opt.sel') || w.querySelector('.opt') || true; }
+    tabs.forEach(function (t, i) {
+      var b = t.el = N.el('div', 'pmt f fl'); b.appendChild(N.ui.icon(t.icon)); bar.appendChild(b);
+      b.onfocus2 = function () { show(t); };
+      b.onclick = function () { if (t.enter) t.enter(); else { var d = into(); if (d !== true) N.nav.focus(d); } };
+      b.onnav = function (dir) {
+        if (dir === 'down') return into();
+        if (dir === 'up') return true;
+        var n = tabs[i + ui.step(dir)]; return n ? n.el : true;
+      };
+    });
+    var start = tabs[0];
+    tabs.forEach(function (t) { if (t.key === P.menuTab) start = t; });
+    show(start);
     m.classList.add('open'); P.menuOpen = true; N.nav.pushScope(m);
-    var sel = m.querySelector('.opt.sel'); N.nav.focus(sel || m.querySelector('.opt'));
+    N.nav.focus(start.el);
     $('osd').classList.remove('off'); $('player').classList.add('osd-on');
   };
   P.closeMenu = function (silent) {
@@ -575,6 +683,7 @@
   P.onKey = function (e) {
     if (!P.open) return false;
     var k = e.keyCode;
+    if (N.snap.isOpen()) return N.snap.key(k);
     if (P.menuOpen) {
       if (k === K.BACK || k === K.ESC || k === K.BACKSPACE) { P.closeMenu(); return true; }
       return false; // let spatial nav handle arrows/enter inside the menu scope
@@ -592,6 +701,7 @@
       P.close(); return true;
     }
     if (k === K.STOP) { P.close(); return true; }
+    if (k === K.RED) { N.snap.open(); return true; } // before showOsd so the controls stay hidden
     P.showOsd();
     var unShown = unState && $('upnext').classList.contains('show');
     if (k === K.UP && !P.skipFocus && !(unShown && unState.active) && (unShown || P.skip)) {

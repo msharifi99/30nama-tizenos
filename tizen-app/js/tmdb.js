@@ -391,7 +391,13 @@
   };
   T.startHome = function () { T.feed('trend'); T.feed('fresh'); T.feed('pop'); };
   // Resolves with up to `n` trending posts that have a TMDB backdrop (fewer on timeout); never rejects.
+  // The last good list is kept (6 h): a cold start or a revisit shows it at once while the feed refreshes for next time.
   T.heroes = function (n, ms) {
+    var hit = cget('heroes', 6 * HR), live = heroesLive(n, ms).then(function (ps) { if (ps.length >= 3) cput('heroes', ps); return ps; });
+    if (hit && hit.v instanceof Array && hit.v.length >= 3) return Promise.resolve(hit.v.slice(0, n).map(function (p) { return Object.assign({}, p); }));
+    return live;
+  };
+  function heroesLive(n, ms) {
     return new Promise(function (res) {
       var f = T.feed('trend'), done = false, tm;
       function pick() { return f.items.filter(function (x) { return x.post._bd; }).sort(function (a, b) { return a.i - b.i; }).slice(0, n).map(function (x) { var p = Object.assign({}, x.post); p._bdPref = true; p._hero = true; return p; }); }
@@ -403,5 +409,5 @@
       function cb() { if (f.done || f.items.filter(function (x) { return x.post._bd; }).length >= n) fin(); }
       tm = setTimeout(fin, ms); f.subscribe(cb);
     });
-  };
+  }
 })();

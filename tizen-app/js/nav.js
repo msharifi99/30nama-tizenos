@@ -46,9 +46,15 @@
     else if (document.activeElement && document.activeElement.tagName === 'INPUT') { document.activeElement.blur(); }
     if (!noScroll) nav.ensureVisible(el);
     if (nav.onFocusChange) nav.onFocusChange(el);
-    if (el._mq) N.ui.mqFit(el._mq);
+    if (el._mq) mqSoon(el);
     if (el.onfocus2) el.onfocus2(el);
   };
+  // marquee measuring forces layout: wait until focus rests (the scroll itself only starts 800 ms later anyway)
+  var mqT = null;
+  function mqSoon(el) {
+    clearTimeout(mqT);
+    mqT = setTimeout(function () { if (nav.cur === el && el._mq) N.ui.mqFit(el._mq); }, 110);
+  }
   nav.focusFirst = function (container) {
     var c = (container || root()).querySelectorAll('.f'), i;
     for (i = 0; i < c.length; i++) if (visible(c[i]) && !c[i].disabled) { nav.focus(c[i]); return c[i]; }
@@ -82,16 +88,19 @@
       n = n.parentNode;
     }
     var cr = cur.getBoundingClientRect(), cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
-    var best = null, bs = 1e12, c = nav.candidates();
+    var best = null, bs = 1e12, rt = root(), c = rt.querySelectorAll('.f'), inSheet = rt.classList && rt.classList.contains('sheet-eps');
     for (var i = 0; i < c.length; i++) {
-      var el = c[i]; if (el === cur) continue;
-      var r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, prim, sec;
+      var el = c[i]; if (el === cur || el.disabled) continue;
+      var r = el.getBoundingClientRect(); if (!(r.width > 0 && r.height > 0)) continue; // one layout read per candidate (same rule as visible())
+      var x = r.left + r.width / 2, y = r.top + r.height / 2, prim, sec;
       if (dir === 'right') { if (x <= cx + 2) continue; prim = Math.max(0, r.left - cr.right); sec = Math.abs(y - cy); }
       else if (dir === 'left') { if (x >= cx - 2) continue; prim = Math.max(0, cr.left - r.right); sec = Math.abs(y - cy); }
       else if (dir === 'down') { if (y <= cy + 2) continue; prim = Math.max(0, r.top - cr.bottom); sec = Math.abs(x - cx); }
       else { if (y >= cy - 2) continue; prim = Math.max(0, cr.top - r.bottom); sec = Math.abs(x - cx); }
       var s = prim + sec * (dir === 'left' || dir === 'right' ? 4 : 1.5);
-      if (s < bs) { bs = s; best = el; }
+      if (s >= bs) continue;
+      if (!inSheet && el.closest && el.closest('.sheet-eps')) continue; // the closed episodes sheet is laid out but off-screen/hidden: never a target
+      bs = s; best = el;
     }
     if (best) nav.focus(best);
     else if (!nav.scopes.length && nav.onEdge) nav.onEdge(dir, cur);

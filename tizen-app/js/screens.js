@@ -22,6 +22,13 @@
     w.appendChild(el('div', 'm', N.t('error') + '. ' + N.t('tryAgain')));
     var b = ui.btn(N.t('retry'), retry, 'primary'); w.appendChild(b); root.appendChild(w); N.nav.focus(b, true);
   }
+  // focus-driven image windowing: runs fn(arg) at once, or once when key-repeat settles (call .off() on destroy)
+  function deferWin(fn) {
+    var pend = false, last;
+    function settle() { if (pend) { pend = false; fn(last); } }
+    N.nav.onSettle(settle);
+    return { run: function (a) { last = a; pend = false; fn(a); /* immediate: deferring left posters empty while scrolling */ }, off: function () { N.nav.offSettle(settle); } };
+  }
   function instant(root, fn) { root.classList.add('noanim'); fn(); void root.offsetWidth; root.classList.remove('noanim'); }
   function skeletonHome(root) {
     var w = el('div', 'skel-wrap'), b = el('div', 'sk-bb');
@@ -117,7 +124,9 @@
     document.addEventListener('keydown', act);
 
     function load() {
-      var cw = N.isLoggedIn() ? N.api.get('continue_watching').catch(function () { return null; }) : Promise.resolve(null);
+      // continue-watching never holds Home back for long: cached (45 s) it is instant, otherwise it gets 350 ms and then slides in as a row
+      var cwAll = N.isLoggedIn() ? N.api.cached('continue_watching', {}, N.api.P.cw).catch(function () { return null; }) : Promise.resolve(null), cw = cwAll;
+      if (N.isLoggedIn() && !N.api.fresh('continue_watching', {}, N.api.P.cw)) cw = Promise.race([cwAll, new Promise(function (r) { setTimeout(r, 350); })]); // timeout -> undefined
       var tmOn = N.tmdb.enabled(), tmH = Promise.resolve([]);
       if (tmOn) { root.classList.add('tm'); N.tmdb.startHome(); tmH = N.tmdb.heroes(6, 3200).catch(function () { return []; }); }
       Promise.all([N.getHome(), cw, tmH]).then(function (res) {
@@ -125,10 +134,21 @@
         // fold in our own newer progress (the backend sometimes drops reports)
         var m = N.isLoggedIn() ? N.wp.cw(extractPosts(res[1]), cwItems(res[1])) : { posts: [], raw: [] };
         build(res[0], m.posts, m.raw, res[2]);
-      })
-        .catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
+        if (res[1] === undefined) cwAll.then(function (r) { if (!dead && r) lateCw(r); });
+      }).catch(function (e) { if (dead) return; N.splashReady(); errorView(root, e, function () { root.innerHTML = ''; sk = skeletonHome(root); load(); }); });
     }
 
+    function cwDef(ps, raw) {
+      return { key: 'cw', title: N.t('continueWatching'), kind: 'land', posts: ps, raw: (raw && (raw.posts || raw.items || raw.list || (raw instanceof Array ? raw : []))) || [] };
+    }
+    // continue-watching answered after Home was drawn: slide the row in at the top (insertRowAt keeps the current view stable)
+    function lateCw(raw) {
+      var m = N.wp.cw(extractPosts(raw), cwItems(raw)), ps = m.posts;
+      if (!ps.length || defs.some(function (d) { return d.key === 'cw'; })) return;
+      ps.forEach(function (p) { cwIds[p.id] = true; });
+      insertRowAt(makeRow(cwDef(ps, m.raw)), 0);
+      if (heroes[heroIdx]) playBtn.lastChild.textContent = cwIds[heroes[heroIdx].id] ? N.t('resume') : N.t('play');
+    }
     function cwNorm(x0, raw) {
       var c = x0.continue_watching || x0, t = Number(c.time || c.position || 0), d = Number(c.duration || 0);
       var season = c.season || (c.info && c.info.season), ep = c.episode || (c.info && c.info.episode);
@@ -142,9 +162,8 @@
       root.removeChild(sk);
       heroes = ((h.hero_header && h.hero_header.posts) || []).slice(0, 8);
       if (tmHeroes && tmHeroes.length >= 3) heroes = tmHeroes;
-      var cwList = cwRaw || [];
       cwPosts.forEach(function (p) { cwIds[p.id] = true; });
-      if (cwPosts.length) defs.push({ key: 'cw', title: N.t('continueWatching'), kind: 'land', posts: cwPosts, raw: cwList });
+      if (cwPosts.length) defs.push(cwDef(cwPosts, cwRaw));
       ['new_releases', 'suggested', 'top_10', 'movies', 'series', 'anime'].forEach(function (k) {
         var ps = h[k] && h[k].posts; if (ps && ps.length) defs.push({ key: k, title: N.t(k), kind: k === 'top_10' ? 'top' : 'poster', posts: k === 'top_10' ? ps.slice(0, 10) : ps });
       });
@@ -172,7 +191,7 @@
       playBtn.onfocus2 = detBtn.onfocus2 = function () { if (st.mode !== 'hero') exitBrowse(); else { curPost = heroes[heroIdx]; } };
       // rows
       rowsEl = el('div', 'rows'); root.appendChild(rowsEl);
-      defs.forEach(function (d) { var r = makeRow(d); pushRow(r); });
+      defs.splice(0).forEach(function (d) { var r = makeRow(d); pushRow(r); }); // pushRow re-adds each def, index-aligned with the rows
       if (!N.isLoggedIn()) {
         noteEl = el('div', 'guest-note'); noteEl.appendChild(el('div', 'gn-t', N.t('loginRequired')));
         noteBtn = ui.btn(N.t('signIn'), function () { N.go('login', {}, { reset: true }); }, '');
@@ -181,7 +200,7 @@
       }
       recalcTops();
       root.onnav = onnav;
-      N.nav.onSettle(follow);
+      N.nav.onSettle(follow); N.nav.onSettle(winSettle);
       // initial state
       var start = 0, br = restore && restore.mode === 'browse' && cards[restore.row] && cards[restore.row][restore.idx];
       if (restore && typeof restore.hero === 'number' && heroes[restore.hero]) start = restore.hero;
@@ -215,12 +234,12 @@
       ui.layoutTrack(tr, r.cs, r.ws);
       return r;
     }
-    function pushRow(r) { rowEls.push(r.row); tracks.push(r.tr); cards.push(r.cs); mem.push(0); rowsEl.appendChild(r.row); rowObjs.push(r); }
+    function pushRow(r) { defs.push(r.d); rowEls.push(r.row); tracks.push(r.tr); cards.push(r.cs); mem.push(0); rowsEl.appendChild(r.row); rowObjs.push(r); }
     function recalcTops() { tops.length = 0; for (var k = 0; k < rowEls.length; k++) tops.push(rowEls[k].offsetTop); if (noteEl) tops.push(noteEl.offsetTop); }
     // insert a TMDB row at index `at`, keeping the current view stable
     function insertRowAt(r, at) {
       var curD = st.mode === 'browse' && defs[st.row] ? defs[st.row] : null;
-      defs.splice(at, 0, r.d); rowEls.splice(at, 0, r.row); tracks.splice(at, 0, r.tr); cards.splice(at, 0, r.cs); mem.splice(at, 0, 0); rowObjs.splice(at, 0, r);
+      defs.splice(at, 0, r.d); rowEls.splice(at, 0, r.row); tracks.splice(at, 0, r.tr); cards.splice(at, 0, r.cs); mem.splice(at, 0, 0); rowObjs.splice(at, 0, r); rowWin.splice(at, 0, undefined);
       rowsEl.insertBefore(r.row, rowEls[at + 1] || noteEl || null);
       recalcTops();
       instant(root, function () {
@@ -273,8 +292,9 @@
       bbE.title.classList.remove('has-logo'); shownHero = p;
       if (p._logo) {
         var im = el('img', 'logo'); im.alt = ''; im.decoding = 'async'; bbE.title.appendChild(im); bbE.title.classList.add('has-logo');
-        im.onload = function () { im.classList.add('in'); };
+        im.onload = function () { ui.mark(p._logo); im.classList.add('in'); };
         im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); bbE.title.classList.remove('has-logo'); };
+        if (ui.cached(p._logo)) im.classList.add('in'); // seen before: no fade
         im.src = p._logo;
       }
     }
@@ -292,7 +312,7 @@
       var key = curPost.id + '|' + curEb;
       if (key !== shownKey) { var f = !shownKey; shownKey = key; swapBB(curPost, curEb, f); }
       N.stage.show(curPost, (curImm || first) ? { immediate: true, done: first ? function () { N.splashReady(); } : null } : {});
-      curImm = false;
+      curImm = false; N.prefetch.focus(curPost);
     }
 
     /* ---- hero mode ---- */
@@ -332,28 +352,43 @@
     }
 
     /* ---- browse mode ---- */
+    // rowWin[k]: the window last applied to row k ('from:to', or 'u' = unloaded), so an unchanged row costs nothing
+    var rowWin = [], winPend = false;
     function windowRow(k, center) {
-      var cs = cards[k], from = Math.max(0, center - 2), to = Math.min(cs.length - 1, center + 9);
+      var cs = cards[k]; if (!cs) return;
+      var from = Math.max(0, center - 2), to = Math.min(cs.length - 1, center + 9), key = from + ':' + to + ':' + cs.length;
+      if (rowWin[k] === key) return;
+      rowWin[k] = key;
       for (var i = from; i <= to; i++) ui.load(cs[i]);
     }
     function windowRows(ri) {
       for (var k = 0; k < cards.length; k++) {
         var d = Math.abs(k - ri);
         if (d <= 2) windowRow(k, mem[k] || 0);
-        else if (d > 4) for (var i = 0; i < cards[k].length; i++) ui.unload(cards[k][i]);
+        else if (d > 4 && rowWin[k] !== 'u') { rowWin[k] = 'u'; for (var i = 0; i < cards[k].length; i++) ui.unload(cards[k][i]); }
       }
     }
+    // image windowing waits for key-repeat to end (decoding while scrolling fast costs frames)
+    function win(ri, i) {
+      winPend = false; windowRows(ri); windowRow(ri, i);
+    }
+    function winSettle() {
+      if (dead || !winPend || st.mode !== 'browse') return;
+      var cur = N.nav.cur, ri = st.row, ix = cards[ri] ? cards[ri].indexOf(cur) : -1;
+      win(ri, ix >= 0 ? ix : (mem[ri] || 0));
+    }
     function setRow(ri) {
-      var ty = 640 - tops[ri];
+      var ty = 640 - (tops[ri] || 0); // ri === rowEls.length is the guest sign-in note: no row to mark current
       if (rowsTy !== ty) { rowsTy = ty; rowsEl.style.transform = 'translateY(' + ty + 'px)'; }
       if (st.row !== ri || !rowEls[ri] || !rowEls[ri].classList.contains('cur')) {
         for (var k = 0; k < rowEls.length; k++) { rowEls[k].classList.toggle('past', k < ri); rowEls[k].classList.toggle('cur', k === ri); }
-        st.row = ri; windowRows(ri);
+        st.row = ri; win(ri, mem[ri] || 0);
       }
     }
     function onCardFocus(ri, i) {
       if (st.mode !== 'browse') { st.mode = 'browse'; root.classList.add('browse'); }
-      mem[ri] = i; setRow(ri); ui.slideTo(tracks[ri], cards[ri][i]._x); windowRow(ri, i);
+      mem[ri] = i; setRow(ri); ui.slideTo(tracks[ri], cards[ri][i]._x);
+      windowRow(ri, i);
       var p = cards[ri][i]._post; curPost = p; curEb = eyebrowFor(p, defs[ri].key, i + 1);
       follow();
     }
@@ -399,7 +434,7 @@
     return {
       destroy: function () {
         dead = true; clearTimeout(fT); clearTimeout(bbT); clearTimeout(heroT); clearInterval(advT); document.removeEventListener('keydown', act);
-        N.nav.offSettle(follow); N.stage.cancel();
+        N.nav.offSettle(follow); N.nav.offSettle(winSettle); N.stage.cancel();
         var c = root.querySelector('.clock'); if (c) clearInterval(c._t);
       },
       focusState: function () {
@@ -419,31 +454,52 @@
     sk.appendChild(skb); root.appendChild(sk);
 
     function load() {
-      var wantStream = N.isLoggedIn();
-      N.api.get('single', { post_id: params.id }).then(function (post) {
+      var wantStream = N.isLoggedIn(), early = null;
+      // signed in: stream + downloads only need the post id, so they start together with `single` instead of after it (guests need options.free_* first)
+      function streamFor() { return N.api.cached('stream', { post_id: params.id, free_stream: wantStream ? 0 : 1 }, N.api.P.stream).then(function (v) { return v ? JSON.parse(JSON.stringify(v)) : v; }, function () { return null; }); } // clone: direct.attach/synth edit the items
+      if (wantStream) {
+        N.lib.ready();
+        early = [streamFor(), N.player.dlMode() === 'off' ? Promise.resolve([]) : N.direct.fetch({ id: params.id }, true)];
+      }
+      N.api.single(params.id).then(function (post0) {
         if (dead) return;
+        var post = Object.assign({}, post0); // the cached object is shared: the screen decorates its own copy
         N.stage.show(post, { immediate: true });
         var free = post.options && post.options.free_stream;
-        var sp = (wantStream || free) ? N.api.call('stream', { post_id: post.id, free_stream: wantStream ? 0 : 1 }).then(function (j) {
-          return (j && j.success) ? j.result : null;
-        }).catch(function () { return null; }) : Promise.resolve(null);
-        var dp = N.player.dlMode() === 'off' ? Promise.resolve([]) : N.direct.fetch(post, wantStream);
-        return Promise.all([sp, dp]).then(function (r) {
+        var sp = early ? early[0] : free ? streamFor() : Promise.resolve(null);
+        var dp = early ? early[1] : N.player.dlMode() === 'off' ? Promise.resolve([]) : N.direct.fetch(post, wantStream);
+        // render as soon as `single` + `stream` are in; the (slower) download links join afterwards
+        return sp.then(function (st) {
           if (dead) return;
-          var st = r[0];
-          try { if (st && st.hls && r[1].length) N.direct.attach(st.hls, r[1], !!(post.options && post.options.is_series)); } catch (e) {}
-          render(post, st);
+          var isS = !!(post.options && post.options.is_series), items0 = st && st.hls instanceof Array ? st.hls : [];
+          // no stream URL on any item: the download links are the only way to play, so wait for them (even when off, and longer) behind a waiting Play button
+          if (!items0.some(N.player.hasHls)) {
+            if (!(wantStream || (post.options && post.options.free_download))) return render(post, st, null);
+            var lateP = dp.then(function (ents) { return ents.length || !(ents.failed || N.player.dlMode() === 'off') ? ents : N.direct.fetch(post, wantStream, true); }).then(function (ents) {
+              if (dead) return null;
+              try {
+                if (items0.length && ents.length) N.direct.attach(items0, ents, isS);
+                if (!items0.some(N.player.playable)) items0 = N.direct.synth(ents, isS);
+              } catch (e) {}
+              return items0;
+            }, function () { return null; });
+            return render(post, st, lateP);
+          }
+          // items play right away; downloads are attached in place to the same objects (the player reads item.file.m3u8 when it starts)
+          dp.then(function (ents) { if (!dead && ents.length) try { N.direct.attach(items0, ents, isS); } catch (e) {} });
+          render(post, st, null);
         });
       }).catch(function (e) { if (!dead) errorView(root, e, function () { root.innerHTML = ''; root.appendChild(sk); load(); }); });
     }
-    function render(post, st) {
+    // lateP: promise of the items once the download links are in (the stream gave nothing playable); the Play button waits meanwhile
+    function render(post, st, lateP) {
       root.removeChild(sk);
-      var items = (st && st.hls ? st.hls.slice() : []);
+      var items = lateP ? [] : (st && st.hls ? st.hls.slice() : []), waiting = !!lateP, autoPending = false;
       items.sort(ui.epCmp);
       // newest of our own last report and the server's continue_watching (the backend sometimes drops reports)
       var srvCw = st && st.continue_watching && st.continue_watching.file_id ? st.continue_watching : null;
-      var resume = N.isLoggedIn() ? N.wp.pick(post.id, srvCw) : srvCw;
-      if (resume && !items.some(function (it) { return it.info && String(it.info.file_id) === String(resume.file_id); })) resume = srvCw;
+      var cw = N.isLoggedIn() ? N.wp.pick(post.id, srvCw) : srvCw, resume = null;
+      if (cw && !items.some(function (it) { return it.info && String(it.info.file_id) === String(cw.file_id); })) cw = srvCw;
       var po = post.options || {}, isSeries = !!po.is_series;
       var tmOn = N.tmdb.enabled(), dpage = el('div', 'd-page'), col = el('div', 'det-col');
       if (tmOn) root.classList.add('tm');
@@ -462,7 +518,9 @@
       dpage.appendChild(col); root.appendChild(dpage);
 
       var startIdx = 0;
-      if (resume) items.forEach(function (it, i) { if (it.info && String(it.info.file_id) === String(resume.file_id)) startIdx = i; });
+      // backend continue_watching vs the local record: whichever is further into the title wins
+      function pickStart() { resume = N.progress.pick(post.id, cw, items); startIdx = resume ? resume.idx : 0; }
+      pickStart();
       function play(i, withResume) {
         // leaving for the player: remember where we were, and fully hide the episodes sheet (it would otherwise be drawn over the video)
         backToSheet = epsOpen; lastFocus = epsOpen ? null : N.nav.cur; if (epsOpen) { epMem[curS] = i; clearTimeout(swT); swT = null; hideEps(); }
@@ -472,19 +530,20 @@
         var info0 = items[startIdx] && items[startIdx].info || {};
         return resume ? N.t('resume') + (isSeries ? ' S' + (info0.season || 1) + '·E' + ui.epLabel(info0.episode, startIdx + 1) : '') : N.t('play');
       }
-      var playB;
-      if (items.length) playB = ui.btn(playLabel(), function () { play(startIdx, true); }, 'primary', 'play');
-      else playB = ui.btn(N.t('play'), function () { N.toast(N.isLoggedIn() ? N.t('noStream') : N.t('playLogin'), 3500); }, 'primary', 'play');
+      var playB = ui.btn(waiting ? N.t('loading') : items.length ? playLabel() : N.t('play'), function () {
+        if (waiting) return;
+        if (items.length) play(startIdx, true); else N.toast(N.isLoggedIn() ? N.t('noStream') : N.t('playLogin'), 3500);
+      }, 'primary' + (waiting ? ' wait' : ''), 'play');
       btns.appendChild(playB);
       var epB = null;
-      if (isSeries && items.length) { epB = ui.btn(N.t('episodes'), function () { openEps(); }, '', 'list'); btns.appendChild(epB); }
       if (N.isLoggedIn()) {
         ['watchlist', 'favorite'].forEach(function (group) {
           var icon = group === 'watchlist' ? 'eye' : 'heart';
           var b = ui.btn('', function () {
             if (b._busy) return;
-            b._busy = true; b.classList.add('busy');
-            N.lib.toggle(group, post.id).then(function (added) {
+            b._busy = true;
+            // optimistic: the button and toast change at once; a failed request flips them back
+            N.lib.toggle(group, post.id, post, function (added) {
               paint(); N.toast(N.t(added ? (group === 'watchlist' ? 'addedWatch' : 'addedFav') : (group === 'watchlist' ? 'removedWatch' : 'removedFav')));
             }).catch(function () {
               paint(); N.toast(N.t('listFailed'));
@@ -499,7 +558,10 @@
 
       /* episodes sheet */
       var sheet = null, tabs = null, wrap = null, track = null, tmeta = null, seasons = [], map = {}, epMem = {}, tileBy = {}, backToSheet = false;
-      if (epB) {
+      // episodes button + sheet: built once items exist (at once, or after the downloads arrive)
+      function buildEps() {
+        if (epB || !isSeries || !items.length) return;
+        epB = ui.btn(N.t('episodes'), function () { openEps(); }, '', 'list'); epB.onfocus2 = heroFocus; btns.insertBefore(epB, playB.nextSibling);
         sheet = el('div', 'sheet-eps'); tabs = el('div', 'tabs'); wrap = el('div', 'eptrack-w'); track = el('div', 'eptrack'); wrap.appendChild(track);
         tmeta = el('div', 'tabs-meta tab'); sheet.appendChild(tabs); sheet.appendChild(tmeta); sheet.appendChild(wrap); root.appendChild(sheet);
         items.forEach(function (it, i) { var s = (it.info && it.info.season) || 1; if (!map[s]) { map[s] = []; seasons.push(s); } map[s].push(i); });
@@ -515,13 +577,14 @@
         });
         ui.tabStrip(tabs);
       }
+      buildEps();
       // tile to focus when entering season s: the remembered episode (an index, never a node: tiles are rebuilt on every season switch), else the first
       function epTarget(s) { var i = epMem[s]; return (i !== undefined && tileBy[i]) || track.firstChild; }
       function buildSeason(s) {
         track.innerHTML = ''; tileBy = {}; var tiles = [];
         map[s].forEach(function (idx) {
           var it = items[idx], prog = 0;
-          if (resume && it.info && String(it.info.file_id) === String(resume.file_id) && Number(resume.duration) > 0) prog = Number(resume.time) / Number(resume.duration);
+          if (resume && resume.idx === idx && Number(resume.duration) > 0) prog = Number(resume.time) / Number(resume.duration);
           var t = ui.epTile(it, idx, { progress: prog });
           t.onclick = function () { play(idx, true); };
           t.onfocus2 = function () { ui.slideTo(track, t._x); epMem[s] = idx; };
@@ -573,7 +636,7 @@
         return false;
       };
       function heroFocus() { setX(false); }
-      playB.onfocus2 = heroFocus; if (epB) epB.onfocus2 = heroFocus;
+      playB.onfocus2 = heroFocus;
       current.back = function () {
         if (rvOpen) { closeReview(); return true; }
         if (epsOpen) { closeEps(); return true; }
@@ -611,7 +674,7 @@
       function faceCard(p, role) {
         var c = el('div', 'card f k-face'), ph = el('div', 'fph');
         ph.appendChild(el('span', '', initials(p.n)));
-        if (p.p) { var im = el('img', 'im'); im.alt = ''; im.decoding = 'async'; im.onload = function () { im.classList.add('in'); }; im.src = N.tmdb.img(p.p, 'w185'); ph.appendChild(im); }
+        if (p.p) { var im = el('img', 'im'), fu = N.tmdb.img(p.p, 'w185'); im.alt = ''; im.decoding = 'async'; im.onload = function () { ui.mark(fu); im.classList.add('in'); }; if (ui.cached(fu)) im.classList.add('in'); im.src = fu; ph.appendChild(im); }
         c._mq = [ui.mq(p.n, 'fnm'), ui.mq(role || '', 'frl')];
         c.appendChild(ph); c.appendChild(c._mq[0]); c.appendChild(c._mq[1]);
         return c;
@@ -660,9 +723,9 @@
       function paintTmdb(d) {
         if (tagEl && d.tagline) { tagEl.textContent = d.tagline; tagEl.classList.add('in'); }
         if (d.logo) {
-          var li = el('img', 'logo'); li.alt = ''; li.decoding = 'async';
-          li.onload = function () { if (dead) return; titleEl.appendChild(li); void li.offsetWidth; li.classList.add('in'); titleEl.classList.add('has-logo'); };
-          li.src = N.tmdb.img(d.logo, 'w500');
+          var li = el('img', 'logo'), lu = N.tmdb.img(d.logo, 'w500'); li.alt = ''; li.decoding = 'async';
+          li.onload = function () { if (dead) return; ui.mark(lu); titleEl.appendChild(li); void li.offsetWidth; li.classList.add('in'); titleEl.classList.add('has-logo'); };
+          li.src = lu;
         }
         if (d.votes >= 5 && d.rating) { meta.appendChild(el('span', 'tmdb tab fadein', 'TMDB ' + d.rating.toFixed(1))); }
         if (d.next && isSeries) {
@@ -709,25 +772,28 @@
       }
       if (tmOn) N.tmdb.details(post).then(function (d) { if (!dead && d) paintTmdb(d); }).catch(function () {});
       current.onPlayerClosed = function () {
-        var last = N.player.last, found = -1;
-        if (last && String(last.post_id) === String(post.id)) {
-          items.forEach(function (it, i) {
-            if (it.info && String(it.info.file_id) === String(last.file_id)) found = i;
-          });
-          if (found >= 0) {
-            resume = { file_id: last.file_id, time: last.time, duration: last.duration };
-            startIdx = found;
-            playB.lastChild.textContent = playLabel();
-          }
-        }
+        var last = N.player.last;
+        if (last && String(last.post_id) === String(post.id)) cw = { file_id: last.file_id, time: last.time, duration: last.duration };
+        // the local record was updated while playing (also for episodes the backend can't track)
+        if (N.player.post && String(N.player.post.id) === String(post.id)) { pickStart(); playB.lastChild.textContent = playLabel(); }
         if (backToSheet && sheet) { backToSheet = false; openEps(N.player.index, true); return; } // same season, on the episode just played (or the one autoplay moved to)
         var t = lastFocus && document.body.contains(lastFocus) && lastFocus.offsetWidth > 0 ? lastFocus : playB; N.nav.focus(t, true);
       };
       N.nav.focus(playB, true);
-      if (params.autoplay) {
-        params.autoplay = 0; // params is the history entry: returning here with Back must not start playback again
+      function autoplay() {
         if (items.length) play(startIdx, true); else N.toast(N.isLoggedIn() ? N.t('noStream') : N.t('playLogin'), 3500);
       }
+      if (params.autoplay) {
+        params.autoplay = 0; // params is the history entry: returning here with Back must not start playback again
+        if (waiting) autoPending = true; else autoplay();
+      }
+      if (lateP) lateP.then(function (its) {
+        if (dead) return;
+        waiting = false; playB.classList.remove('wait');
+        if (its && its.length) { items = its.slice(); items.sort(ui.epCmp); pickStart(); buildEps(); }
+        playB.lastChild.textContent = items.length ? playLabel() : N.t('play');
+        if (autoPending) { autoPending = false; autoplay(); }
+      });
     }
     var current = { destroy: function () { dead = true; clearTimeout(swT); if (sheetScope) { N.nav.popScope(); sheetScope = null; } if (current.closeRv) current.closeRv(); } };
     load();
@@ -819,6 +885,10 @@
       type(e.key.toLowerCase());
     }
     document.addEventListener('keydown', onKeyDown);
+    var sWin = deferWin(function (i) {
+      var lo = Math.max(0, i - 4), hi = Math.min(rg.children.length, i + 12);
+      for (var k = lo; k < hi; k++) { var cc = rg.children[k].card; if (cc) ui.load(cc); }
+    });
 
     function show(posts, header, msg) {
       clearTimeout(swT); rg.classList.add('sw');
@@ -840,8 +910,7 @@
             });
           };
           cell.card.onfocus2 = function () {
-            var lo = Math.max(0, i - 4), hi = Math.min(rg.children.length, i + 12);
-            for (var k = lo; k < hi; k++) { var cc = rg.children[k].card; if (cc) ui.load(cc); }
+            N.prefetch.focus(p); sWin.run(i);
           };
           rg.appendChild(cell);
         });
@@ -858,7 +927,7 @@
     function run() {
       var qq = q.trim(); var my = ++seq;
       if (!qq) { popular('', my); return; }
-      N.api.get('search', { query: qq, streamonly: 0, page: 1 }).then(function (r) {
+      N.api.cached('search', { query: qq, streamonly: 0, page: 1 }, N.api.P.search).then(function (r) {
         if (dead || my !== seq) return;
         if (!r.posts || !r.posts.length) { popular(N.t('nothingFor') + ' “' + qq + '”', my); return; }
         show(r.posts, N.t('topResults'), '');
@@ -866,14 +935,13 @@
     }
     layout(); popular('');
     N.nav.focus(grid.firstChild, true);
-    return { destroy: function () { dead = true; clearTimeout(timer); clearTimeout(swT); document.removeEventListener('keydown', onKeyDown); } };
+    return { destroy: function () { dead = true; clearTimeout(timer); clearTimeout(swT); sWin.off(); document.removeEventListener('keydown', onKeyDown); } };
   };
 
   /* ================= Archive ================= */
-  var menuCache = null;
   S.archive = function (root, params, restore) {
     if (params && params.slug) return archiveList(root, params, restore);
-    var dead = false;
+    var dead = false, tWin = null;
     root.classList.add('archive'); N.stage.dim(0.72);
     var box = el('div', 'arch'); root.appendChild(box);
     box.reveal = function (e) { var ty = ui.vscroll(box, e, 260); box.classList.toggle('scrolled', ty < 0); };
@@ -886,18 +954,18 @@
       box.appendChild(el('div', 'sec-h', N.t('genres')));
       var tiles = el('div', 'tiles'); box.appendChild(tiles);
       var all = [];
+      tWin = deferWin(function (i) { for (var k = Math.max(0, i - 4); k < Math.min(all.length, i + 12); k++) ui.load(all[k]); });
       (m.genres || []).forEach(function (g, i) {
         var im = g.image || {}, u = (im.webp && (im.webp.full || im.webp.thumb)) || (im.jpg && (im.jpg.full || im.jpg.thumb)) || '';
         var c = ui.card({ id: g.id, title: { english: g.name } }, 'tile', { image: u, name: g.name, count: g.count });
         c.onclick = function () { N.go('archive', { slug: g.slug, name: g.name }); };
-        c.onfocus2 = function () { for (var k = Math.max(0, i - 4); k < Math.min(all.length, i + 12); k++) ui.load(all[k]); };
+        c.onfocus2 = function () { tWin.run(i); };
         tiles.appendChild(c); all.push(c); if (i < 8) ui.load(c);
       });
       N.nav.focus(cats.firstChild, true);
     }
-    if (menuCache) show(menuCache);
-    else N.api.get('menu').then(function (m) { menuCache = m; show(m); }).catch(function (e) { if (!dead) errorView(root, e, function () { N.go('archive', {}, { replace: true }); }); });
-    return { destroy: function () { dead = true; } };
+    N.api.cached('menu', {}, N.api.P.menu).then(show).catch(function (e) { if (!dead) errorView(root, e, function () { N.go('archive', {}, { replace: true }); }); });
+    return { destroy: function () { dead = true; if (tWin) tWin.off(); } };
   };
 
   var SORTS = [['date', 'newest'], ['favorite', 'popular'], ['update', 'updated']];
@@ -913,6 +981,8 @@
       var p = ui.pill(N.t(s[1]), function () { if (tab === s[0]) return; tab = s[0]; paint(); reset(); }, tab === s[0]); p._k = s[0]; sorts.appendChild(p);
       p.onnav = function (dir) { if (dir === 'down') return cells[0] ? cells[0].card : true; if (dir === 'up') return true; return false; };
     });
+    if (o.extra) { var xp = ui.pill(o.extra[0], o.extra[1], false); xp.onnav = sorts.firstChild.onnav; sorts.appendChild(xp); }
+    var gWin = deferWin(function (row) { for (var k = Math.max(0, (row - 1) * COLS); k < Math.min(cells.length, (row + 3) * COLS); k++) ui.load(cells[k].card); });
     function paint() { for (var i = 0; i < sorts.children.length; i++) sorts.children[i].classList.toggle('cur', sorts.children[i]._k === tab); }
     function addSkels(n) { for (var i = 0; i < n; i++) { var c = el('div', 'gcell'); c.appendChild(ui.skelCard('grid')); skels.push(c); grid.appendChild(c); } }
     function clearSkels() { skels.forEach(function (s) { if (s.parentNode) s.parentNode.removeChild(s); }); skels = []; }
@@ -921,7 +991,7 @@
       wantIdx = 0; restoring = false; load();
     }
     function load() {
-      if (loading) return; loading = true; var my = gen; addSkels(page === 1 ? 14 : 7);
+      if (loading) return; loading = true; var my = gen; if (!(o.hot && o.hot(tab, page))) addSkels(page === 1 ? 14 : 7); // cached pages draw without a skeleton flash
       o.fetch(tab, page).then(function (r) {
         if (dead || my !== gen) return;
         loading = false; clearSkels();
@@ -938,8 +1008,9 @@
             });
           };
           c.onfocus2 = function () {
+            N.prefetch.focus(p);
             var row = Math.floor(idx / COLS), rows = Math.ceil(cells.length / COLS);
-            for (var k = Math.max(0, (row - 1) * COLS); k < Math.min(cells.length, (row + 3) * COLS); k++) ui.load(cells[k].card);
+            gWin.run(row);
             if (row >= rows - 2 && page < pages && !loading) { page++; load(); }
           };
           cells.push(cell); grid.appendChild(cell);
@@ -958,15 +1029,17 @@
     }
     load();
     return {
-      destroy: function () { dead = true; },
+      destroy: function () { dead = true; gWin.off(); },
       focusState: function () { for (var i = 0; i < cells.length; i++) if (cells[i].card === N.nav.cur) return { idx: i, tab: tab }; return { tab: tab }; }
     };
   }
   function archiveList(root, params, restore) {
+    function arch(sort, page) { return { slugs: params.slug, streamonly: 1, page: page, orderby: sort, order: 'desc' }; }
     return pagedGrid(root, {
       title: function () { return params.name || params.slug; },
       tabs: SORTS,
-      fetch: function (sort, page) { return N.api.get('archive', { slugs: params.slug, streamonly: 1, page: page, orderby: sort, order: 'desc' }); },
+      fetch: function (sort, page) { return N.api.cached('archive', arch(sort, page), N.api.P.list); },
+      hot: function (sort, page) { return N.api.fresh('archive', arch(sort, page), N.api.P.list); },
       retry: function () { N.go('archive', params, { replace: true }); }
     }, restore && { idx: restore.idx, tab: restore.sort });
   }
@@ -976,7 +1049,8 @@
       root.classList.add('archive'); N.stage.dim(0.72);
       var m = el('div', 'center-msg'), text = el('div', 'm', N.t('listLogin'));
       var signIn = ui.btn(N.t('signIn'), function () { N.go('login', {}, { reset: true }); }, 'primary');
-      m.appendChild(text); m.appendChild(signIn); root.appendChild(m); N.nav.focus(signIn, true);
+      var ph = ui.btn(N.t('photos'), function () { N.go('photos'); }, ''); ph.style.marginTop = '20px'; // photos live on the TV, no account needed
+      m.appendChild(text); m.appendChild(signIn); m.appendChild(ph); root.appendChild(m); N.nav.focus(signIn, true);
       return {};
     }
     return pagedGrid(root, {
@@ -984,8 +1058,92 @@
       tabs: [['watchlist', 'watchlist'], ['favorite', 'favorites']],
       empty: { watchlist: 'emptyWatch', favorite: 'emptyFav' },
       fetch: function (group, page) { return N.lib.list(group, page); },
-      retry: function () { N.go('mylist', {}, { replace: true }); }
+      hot: function (group, page) { return N.api.fresh('user_list', N.lib.listParams(group, page), N.api.P.list); },
+      retry: function () { N.go('mylist', {}, { replace: true }); },
+      extra: [N.t('photos'), function () { N.go('photos'); }]
     }, restore);
+  };
+
+  /* ================= Photos (captured in the player, stored by the background service) ================= */
+  S.photos = function (root) {
+    var dead = false, list = [], cards = [], view = null;
+    root.classList.add('archive', 'photos'); N.stage.dim(0.72);
+    var box = el('div', 'arch'); root.appendChild(box);
+    var head = el('div', 'head ah', N.t('photos')), cnt = el('small', 'tab', ''); head.appendChild(cnt); box.appendChild(head);
+    var grid = el('div', 'pgroups'); box.appendChild(grid);
+    box.reveal = function (e) { var ty = ui.vscroll(box, e._cell || e, 260); box.classList.toggle('scrolled', ty < 0); };
+    var sk = el('div', 'msg', N.t('loading')); sk.style.cssText = 'position:absolute;top:300px;' + (N.isRtl() ? 'right' : 'left') + ':184px'; root.appendChild(sk);
+
+    function caption(p) { return [p.title, p.sub, N.fmtTime(p.t)].filter(Boolean).join(' · '); }
+    // one section per title, the title with the newest photo first; list is re-ordered to match so the viewer browses the same way
+    function groups() {
+      var by = {}, out = [];
+      list.forEach(function (p) { var k = p.title || '—'; if (!by[k]) { by[k] = []; out.push({ title: k, items: by[k] }); } by[k].push(p); });
+      list = [].concat.apply([], out.map(function (g) { return g.items; }));
+      return out;
+    }
+    function lan(url) {
+      if (!url) return;
+      var qr = el('div', 'tk-qr pqr'), tile = el('div', 'tile');
+      try { var q = qrcode(0, 'M'); q.addData(url); q.make(); tile.innerHTML = q.createSvgTag({ cellSize: 4, margin: 0, scalable: true }); } catch (e) {}
+      qr.appendChild(tile); qr.appendChild(el('div', 'cap', N.t('photosLan'))); qr.appendChild(el('div', 'cap url', url)); root.appendChild(qr);
+    }
+    function paint(focusIdx) {
+      grid.innerHTML = ''; cards = [];
+      cnt.textContent = list.length ? String(list.length) : '';
+      if (!list.length) {
+        var empty = el('div', 'list-empty'); empty.appendChild(el('div', 'm', N.t('photosEmpty')));
+        empty.appendChild(el('div', 'hint', N.t('photosHint'))); grid.appendChild(empty); N.nav.clear(); return;
+      }
+      groups().forEach(function (g) {
+        var h = el('div', 'sec-h', g.title), row = el('div', 'prow');
+        h.appendChild(el('small', 'tab', String(g.items.length))); grid.appendChild(h); grid.appendChild(row);
+        g.items.forEach(function (p) {
+          var i = cards.length, cell = el('div', 'pcell'), c = el('div', 'card f k-land'), im = el('img', 'im');
+          im.alt = ''; im.decoding = 'async'; im.onload = function () { im.classList.add('in'); }; im.src = N.snap.src(p.id, true);
+          c.appendChild(im); c._mq = ui.mq([p.sub, N.fmtTime(p.t)].filter(Boolean).join(' · '), 'lbl'); c.appendChild(c._mq); c._cell = cell;
+          c.onclick = function () { open(i); };
+          cell.appendChild(c); row.appendChild(cell); cards.push(c);
+        });
+      });
+      N.nav.focus(cards[Math.min(focusIdx || 0, cards.length - 1)], true);
+    }
+
+    /* full-screen viewer: Left/Right browse, OK on Delete asks first, Back closes */
+    function open(i) {
+      var v = el('div', 'pview'), im = el('img', ''), cap = el('div', 'pcap'), del = ui.btn(N.t('delete'), ask, 'danger');
+      v.appendChild(im); v.appendChild(cap); v.appendChild(del); document.body.appendChild(v);
+      view = { el: v, i: i, show: function (k) {
+        view.i = (k + list.length) % list.length; var p = list[view.i];
+        im.src = N.snap.src(p.id); cap.textContent = caption(p) + '   ' + (view.i + 1) + ' / ' + list.length;
+      } };
+      del.onnav = function (dir) { if (dir === 'left' || dir === 'right') { view.show(view.i + ui.step(dir)); return true; } return true; };
+      view.show(i); N.nav.pushScope(v); N.nav.focus(del, true);
+      function ask() {
+        var p = list[view.i];
+        N.confirm({ title: N.t('photoDelTitle'), body: caption(p), ok: N.t('delete'), danger: true, onOk: function () {
+          N.snap.del(p.id);
+          list.splice(view.i, 1);
+          if (!list.length) { close(); paint(0); return; }
+          view.show(view.i); N.nav.focus(del, true);
+        } });
+      }
+    }
+    function close() {
+      if (!view) return false;
+      var i = view.i; N.nav.popScope(); view.el.parentNode.removeChild(view.el); view = null;
+      paint(i); return true;
+    }
+
+    N.snap.list(function (e, r) {
+      if (dead) return; root.removeChild(sk);
+      if (e) {
+        var m = el('div', 'center-msg'); m.appendChild(ui.icon('warn')); m.appendChild(el('div', 'm', N.t('photosNA'))); root.appendChild(m); return;
+      }
+      list = (r.photos || []).slice().reverse(); // newest first
+      lan(r.lan); paint(0);
+    });
+    return { destroy: function () { dead = true; if (view) { N.nav.popScope(); view.el.parentNode.removeChild(view.el); view = null; } }, back: close };
   };
 
   /* ================= Settings ================= */
@@ -997,7 +1155,7 @@
     var rows = {};
     function fmtExpire(v) {
       if (v === undefined || v === null || v === '') return N.t('unknown');
-      if (typeof v === 'number' || /^\d{9,13}$/.test(String(v))) { var n = Number(v); if (n < 1e11) n *= 1000; return new Date(n).toISOString().slice(0, 10); }
+      if (typeof v === 'number' || /^\d{9,13}$/.test(String(v))) { var n = Number(v); if (n < 1e11) n *= 1000; var d = new Date(n); return isNaN(d.getTime()) ? String(v) : d.toISOString().slice(0, 10); }
       return String(v);
     }
     // option row. opts: values [{v,label}], get(), set(v)
@@ -1041,12 +1199,16 @@
         p.appendChild(sample);
         p.appendChild(opt(N.t('dlMode'), [{ v: 'off', label: N.t('dlOff') }, { v: 'menu', label: N.t('dlMenu') }, { v: 'auto', label: N.t('dlAuto') }],
           function () { return N.player.dlMode(); }, function (v) { N.store.set('dlMode', v); }));
+        p.appendChild(opt(N.t('qPref'), [{ v: 'max', label: N.t('maxQ') }, { v: '1080', label: '1080p' }, { v: '720', label: '720p' }, { v: '480', label: '480p' }],
+          function () { return N.player.qPref(); }, function (v) { N.store.set('qPref', v); }));
         p.appendChild(opt(N.t('autoplay'), onOff, function () { return N.store.get('autoplay', true); }, function (v) { N.store.set('autoplay', v); }));
       },
       display: function (p) {
         p.appendChild(opt(N.t('reduce'), onOff.slice().reverse().map(function (x) { return x; }), function () { return N.store.get('calm', false); }, function (v) {
           N.store.set('calm', v); document.body.classList.toggle('calm', v);
         }));
+        p.appendChild(opt(N.t('lite'), [{ v: null, label: N.t('auto') }, { v: true, label: N.t('on') }, { v: false, label: N.t('off') }],
+          function () { var v = N.store.get('lite', null); return v === true || v === false ? v : null; }, function (v) { ui.setLite(v); }));
       },
       takeover: function (p) {
         var tk = N.takeover, st = el('div', 'note tkst', N.t('tkChecking')), body = el('div', 'tkbody scroll');
@@ -1167,7 +1329,7 @@
         acts.innerHTML = '';
         var bs = [ui.btn(N.t('tmdbConnect'), connect, 'primary', 'check')]; bs[0].setAttribute('data-a', 'connect');
         if (N.tmdb.source() === 'stored') { var rm = ui.btn(N.t('tmdbRemove'), removeKey, 'danger'); rm.setAttribute('data-a', 'remove'); bs.push(rm); }
-        if (N.tmdb.enabled()) { var cc = ui.btn(N.t('clearCache'), function () { N.tmdb.clearCache(); N.toast(N.t('cleared')); }); cc.setAttribute('data-a', 'cache'); bs.push(cc); }
+        if (N.tmdb.enabled()) { var cc = ui.btn(N.t('clearCache'), function () { N.tmdb.clearCache(); N.api.clearCache(); N.toast(N.t('cleared')); }); cc.setAttribute('data-a', 'cache'); bs.push(cc); }
         bs.forEach(function (b) { acts.appendChild(b); });
         if (keep) N.nav.focus(acts.querySelector('[data-a="' + keep + '"]') || bs[0], true);
       }

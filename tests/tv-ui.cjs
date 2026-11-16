@@ -38,6 +38,7 @@ const artwork = (poster,i=0) => `<svg xmlns="http://www.w3.org/2000/svg" width="
        if(action==='archive')return new Promise(function(resolve){setTimeout(function(){resolve({posts:posts.slice((p.page-1)*14,p.page*14),pages:3,total:35});},100);});
        if(action==='user_list' && p.action==='list')return Promise.resolve({posts:posts.slice(0,17),pages:1,total:17});
        if(action==='single')return Promise.resolve(Object.assign({},posts[0],{options:{free_stream:true,is_series:true}}));
+       if(action==='stream')return N.api.call(action,p).then(function(j){return j.result;});
        if(action==='menu')return Promise.resolve({categories:[{name:'Movies',slug:'movies'}],genres:[{id:1,name:'Drama',slug:'drama',count:35}]});
        return Promise.resolve({});
       };N.api.call=function(action){return Promise.resolve({success:true,result:action==='stream'?{hls:Array.from({length:10},function(_,i){return {info:{file_id:i+1,season:i<5?1:2,episode:i%5+1},file:{m3u8:'https://offline.invalid/test.m3u8'}};})}:{}});};
