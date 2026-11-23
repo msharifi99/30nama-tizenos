@@ -64,7 +64,7 @@ Rules:
   --accent-ink:#1a1205;    /* text on accent */
   --focus:#ffffff;
   --focus-ink:#0b0c10;     /* text on white focus fill */
-  --good:#62d39b;          /* 30nama score, "free" badge */
+  --good:#62d39b;          /* "free" badge */
   --danger:#ff6b5e;
 
   /* type (px at 1080p; never below 22) */
@@ -293,7 +293,7 @@ y  640 │  FOCUS LINE: the focused row's header top is always here
        │  header --t-m 700 (48 incl. gap) + cards 300 → bottom 988
 y 1036 │  next row header peeks (scroll affordance)
 ```
-- The **IMDb badge** is an outlined pill (2px text-3 border, 6/12 padding) reading "IMDb 7.8". The 30nama score is a `--good` number. Age is an outlined square badge. Show at most 2 genres.
+- **Score badges** are outlined pills (2px text-3 border, 2/12 padding) grouped 8px apart, always LTR and monochrome (text-1, no brand colors): IMDb (solid "IMDb" plate icon + score), Rotten Tomatoes (tomato icon at 60%+, splat below + percentage), Metacritic ("Metacritic" label + score), and TMDB when enriched. The billboard shows only IMDb; Details shows all. The 30nama site score is not shown. Age is an outlined square badge. Show at most 2 genres.
 - **Badges on cards** (top-start, at most one, `--t-cap` 600, radius 8, 4/10 padding): "SOON" (surface-2) when `coming_soon`, "FREE" (good, dark ink) when `free_stream`, and "زیرنویس" / "SUB" (rgba black .7) when `persian_subtitle`. Badges in rows only; the billboard already has room for everything else.
 - **Row cards have no titles under them.** The billboard names the focused card, which keeps rows clean and posters large.
 

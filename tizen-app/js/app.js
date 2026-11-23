@@ -60,7 +60,7 @@
   };
   rail.curKey = function () {
     var i = stack.length - 1, e = stack[i];
-    while (e && (e.name === 'details' || e.name === 'photos') && i > 0) { i--; e = stack[i]; }
+    while (e && (e.name === 'details' || e.name === 'person' || e.name === 'photos') && i > 0) { i--; e = stack[i]; }
     if (!e) return '';
     if (e.name === 'archive' && e.params && (e.params.slug === 'movies' || e.params.slug === 'series' || e.params.slug === 'anime')) return e.params.slug;
     return e.name;
@@ -119,7 +119,7 @@
     var ok = N.ui.btn(o.ok, function () { N.closeModal(); o.onOk(); }, o.danger ? 'danger' : 'primary');
     row.appendChild(cancel); row.appendChild(ok); box.appendChild(row); m.appendChild(box); document.body.appendChild(m);
     modal = { el: m, prev: N.nav.cur };
-    N.nav.pushScope(m); void m.offsetWidth; m.classList.add('show'); N.nav.focus(cancel, true);
+    N.nav.pushScope(m); void m.offsetWidth; m.classList.add('show'); N.nav.focus(o.focusOk ? ok : cancel, true);
   };
   N.closeModal = function () {
     if (!modal) return; var m = modal; modal = null;

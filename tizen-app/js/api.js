@@ -419,6 +419,17 @@
     }
     return { posts: all.map(function (x) { return x.p; }), raw: all.map(function (x) { return x.r; }) };
   };
+  // remove a title from the server's Continue Watching; our own progress for it goes too, or wp.cw would bring it back
+  wp.dismiss = function (postId) {
+    return api.get('continue_watching_dismiss', { id: postId }).then(function (r) {
+      var id = String(postId);
+      ['wpLocal', 'wpServer', 'wpPosts'].forEach(function (k) { var m = N.store.get(k, {}); if (m[id]) { delete m[id]; N.store.set(k, m); } });
+      delete wpPostSaved[id];
+      N.progress.forget(postId);
+      api.drop(['continue_watching', 'stream']);
+      return r;
+    });
+  };
   wp.clear = function () { N.store.del('wpLocal'); N.store.del('wpServer'); N.store.del('wpPosts'); wpPostSaved = {}; };
   N.setSession = function (user) {
     var prev = N.session && N.session.token;

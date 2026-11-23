@@ -10,6 +10,10 @@ Unofficial 30nama.com client for Samsung Tizen TVs. A plain HTML/CSS/JS web app 
 
 - Run in a desktop browser: `cd tizen-app && node tools/devserver.js 8080`, then open http://localhost:8080/. Node 18+. Arrow keys/Enter/Backspace (=Back) work; the QR screen has a Guest button. Streaming needs a logged-in subscription (scan the QR with a phone logged in to 30nama.com).
 - Build/sign/install on a TV: `./build.sh <security-profile> [<tv-ip>:26101]`. Targets Windows + Git Bash (`TIZEN_HOME` defaults to `/c/tizen-studio`, uses `tizen.bat`, `cygpath`); it won't run as-is on macOS. `./install-wizard.sh` is the guided certificate/profile setup.
+- Install the local working copy on a TV without Tizen Studio (any OS), using the Apps2Samsung CLI (`apps2samsung-cli`, from the Apps2Samsung releases), which signs the package for the TV itself:
+  1. Package an unsigned `.wgt` with the same exclusions as the release workflow: copy `tizen-app/` to a temp dir, delete `tools/`, `js/tmdb-token.js` and `js/dev-session.js` there, and zip the contents (not the folder) into e.g. `30nama-local.wgt`.
+  2. `apps2samsung-cli scan` to find the TV's IP (the TV needs Developer Mode on with this machine's IP set), then `apps2samsung-cli install <file>.wgt --tv <ip>` (add `--yes` if it stops at a pre-install check, exit code 3) and optionally `apps2samsung-cli launch Nama30TvAp.Nama30TV --tv <ip>`. `apps2samsung-cli installed --tv <ip>` shows the installed version.
+  3. The TV may refuse a lower `config.xml` version than the one installed. If so, raise the version in the temp copy's `config.xml` only, not in the repo.
 - Regenerate icons: `node tizen-app/tools/make-icons.js`. Regenerate TMDB mock fixtures: `node tizen-app/tools/make-fixtures.js <token>`.
 - There are no tests. `tools-video/` is a separate puppeteer-core toolset (hardcoded Windows Chrome path) for recording demo tours: `node go.js <tour> [dry] [outDir]`.
 
@@ -19,11 +23,11 @@ All code is global-namespace `N` (`window.N`), loaded by ordered `<script>` tags
 
 - `config.js`: constants, API keys, key codes, `N.store` (localStorage) and DOM helpers (`N.$`, `N.el`). Decides whether to route requests through the dev proxy (only when hostname is localhost; disabled under TizenBrew's `127.0.0.1:8081/module/...` origin).
 - `api.js`: endpoint discovery with fallback hosts, session in localStorage. Requests go through a scheduler with retry/backoff (30nama is behind Cloudflare rate limiting).
-- `nav.js`: custom spatial navigation. Elements can override movement with `onnav(dir)`, hook focus via `onfocus2`; containers have `reveal`; scopes isolate sheets/modals; `body.fast` is set on key-repeat.
+- `nav.js`: custom spatial navigation. Elements can override movement with `onnav(dir)`, hook focus via `onfocus2`, and react to OK held 600 ms via `onlong()` (their short press then clicks on keyup; right click on desktop); containers have `reveal`; scopes isolate sheets/modals; `body.fast` is set on key-repeat.
 - `stage.js`: one persistent global backdrop behind all screens except the player (the "One Stage" concept in `design/DESIGN.md`); screens are overlays that feed it images.
-- `screens.js` (largest file): QR login, Home, Details (+ seasons/episodes sheet), Search, Archive, Settings. `app.js`: boot, router with transitions, icon rail, exit/sign-out sheets, splash, Home cache (`N.getHome`, 90 s, falls back to last good copy).
+- `screens.js` (largest file): QR login, Home, Details (+ seasons/episodes sheet), Person (TMDB cast/crew filmography), Search, Archive, Settings. `app.js`: boot, router with transitions, icon rail, exit/sign-out sheets, splash, Home cache (`N.getHome`, 90 s, falls back to last good copy).
 - `player.js`: uses Samsung AVPlay when `window.webapis.avplay` exists, otherwise `<video>` + bundled hls.js (the TizenBrew case). Contains subtitles overlay, resume, skip intro, Up Next, audio/subtitle sheet (Up) and episodes sheet (Down).
-- `tmdb.js`: optional enrichment, fully off without a token. Token comes from the git-ignored `js/tmdb-token.js` (copy `tmdb-token.example.js`) or `localStorage.tmdbToken`; `localStorage.tmdbMock='1'` serves `tools/fixtures/*.json`. Mapping between 30nama and TMDB titles is by IMDb id, then fuzzy title/year match.
+- `tmdb.js`: optional enrichment, fully off without a token. Token comes from the git-ignored `js/tmdb-token.js` (copy `tmdb-token.example.js`) or `localStorage.tmdbToken`; `localStorage.tmdbMock='1'` serves `tools/fixtures/*.json`. Mapping between 30nama and TMDB titles is by IMDb id, then fuzzy title/year match. Person filmographies are queried by TMDB person id and each title is resolved against 30nama before it can open Details.
 - `tools/devserver.js`: static server plus `/proxy?url=` (adds CORS, rewrites m3u8 URIs). Intentionally uses Node's `https`, not `fetch`, because Cloudflare blocks undici's TLS fingerprint. `build.sh` and the release workflow strip `tizen-app/tools/` from the package.
 
 ## Constraints and conventions
