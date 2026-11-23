@@ -14,6 +14,7 @@
     N.store.set(KEY, m);
   };
   W.get = function (postId) { return all()[postId] || null; };
+  W.forget = function (postId) { var m = all(); if (m[postId]) { delete m[postId]; N.store.set(KEY, m); } };
   // index in items of a saved/backend position: by file_id, else by season + episode
   function indexOf(items, r) {
     var i, info;

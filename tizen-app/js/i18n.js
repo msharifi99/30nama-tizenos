@@ -7,6 +7,7 @@
       orVisit: 'Or visit 30nama.com/auth and enter', waiting: 'Waiting for scan…', expired: 'Code expired',
       guest: 'Continue as guest', refresh: 'New code', loading: 'Loading...', error: 'Something went wrong', retry: 'Retry',
       continueWatching: 'Continue watching', hero_header: 'Featured', new_releases: 'New releases', suggested: 'Suggested',
+      cwRemoveTitle: 'Remove from Continue watching?', cwRemoved: 'Removed from Continue watching', cwRemoveFailed: 'Could not remove it. Please try again.',
       top_10: 'Top 10', top10: 'Top 10',
       play: 'Play', resume: 'Resume', details: 'Details', episodes: 'Episodes', season: 'Season', seasons: 'seasons', episode: 'Episode', nowPlaying: 'Now playing', tryAgain: 'Please try again in a moment.', cast: 'Cast', featured: 'Featured',
       movie: 'Movie', persianSub: 'Persian subtitles', minLeft: 'min left', min: 'min', uS: 's', uM: 'm', uH: 'h', free: 'FREE', soon: 'SOON',
@@ -33,7 +34,8 @@
       tmdbRemoveTitle: 'Remove the TMDB key?', tmdbRemoveBody: 'Posters, logos and cast from TMDB will turn off on this TV.', tmdbSaved: 'TMDB connected', tmdbRemoved: 'TMDB key removed',
       tmdbScan: 'Scan to open your TMDB API settings', tmdbChars: 'characters',
       tmdbHelp: 'Enter the 32-character API Key from themoviedb.org/settings/api. The longer Read Access Token works too: use Keyboard, or paste it.',
-      Creator: 'Creator', Director: 'Director', Writer: 'Writer', Composer: 'Composer', 'Executive Producer': 'Executive producer', readMore: 'OK to read', scrollHint: '▲ ▼ scroll'
+      Creator: 'Creator', Director: 'Director', Writer: 'Writer', Composer: 'Composer', 'Executive Producer': 'Executive producer', Acting: 'Acting', Directing: 'Directing', Writing: 'Writing', Production: 'Production', Sound: 'Sound', Camera: 'Camera', Editing: 'Editing',
+      notOnSite: 'Not available on 30nama', born: 'Born', died: 'Died', titles: 'titles', filmography: 'Filmography', readMore: 'OK to read', scrollHint: '▲ ▼ scroll'
     },
     fa: {
       home: 'خانه', search: 'جستجو', archive: 'آرشیو', settings: 'تنظیمات', movies: 'فیلم', series: 'سریال', anime: 'انیمه', account: 'حساب',
@@ -42,6 +44,7 @@
       orVisit: 'یا به 30nama.com/auth بروید و وارد کنید', waiting: 'در انتظار اسکن…', expired: 'کد منقضی شد',
       guest: 'ادامه به عنوان مهمان', refresh: 'کد جدید', loading: 'در حال بارگذاری...', error: 'مشکلی پیش آمد', retry: 'تلاش دوباره',
       continueWatching: 'ادامه تماشا', hero_header: 'ویژه', new_releases: 'تازه‌ها', suggested: 'پیشنهادی',
+      cwRemoveTitle: 'از ادامه تماشا حذف شود؟', cwRemoved: 'از ادامه تماشا حذف شد', cwRemoveFailed: 'حذف ممکن نشد. لطفاً دوباره تلاش کنید.',
       top_10: '۱۰ برتر', top10: '۱۰ برتر',
       play: 'پخش', resume: 'ادامه', details: 'جزئیات', episodes: 'قسمت‌ها', season: 'فصل', seasons: 'فصل', episode: 'قسمت', nowPlaying: 'در حال پخش', tryAgain: 'لطفاً کمی بعد دوباره تلاش کنید.', cast: 'بازیگران', featured: 'ویژه',
       movie: 'فیلم', persianSub: 'زیرنویس فارسی', minLeft: 'دقیقه مانده', min: 'دقیقه', uS: 'ث', uM: 'د', uH: 'س', free: 'رایگان', soon: 'به‌زودی',
@@ -68,7 +71,8 @@
       tmdbRemoveTitle: 'کلید TMDB حذف شود؟', tmdbRemoveBody: 'پوستر، لوگو و بازیگران از TMDB روی این تلویزیون خاموش می‌شود.', tmdbSaved: 'TMDB متصل شد', tmdbRemoved: 'کلید TMDB حذف شد',
       tmdbScan: 'برای باز کردن تنظیمات API در TMDB اسکن کنید', tmdbChars: 'نویسه',
       tmdbHelp: 'کلید ۳۲ نویسه‌ای API Key را از themoviedb.org/settings/api وارد کنید. توکن بلندتر Read Access Token هم پذیرفته می‌شود: با صفحه‌کلید یا چسباندن.',
-      Creator: 'سازنده', Director: 'کارگردان', Writer: 'نویسنده', Composer: 'آهنگساز', 'Executive Producer': 'تهیه‌کننده اجرایی', readMore: 'OK برای خواندن', scrollHint: '▲ ▼ پیمایش'
+      Creator: 'سازنده', Director: 'کارگردان', Writer: 'نویسنده', Composer: 'آهنگساز', 'Executive Producer': 'تهیه‌کننده اجرایی', Acting: 'بازیگری', Directing: 'کارگردانی', Writing: 'نویسندگی', Production: 'تهیه‌کنندگی', Sound: 'صدا', Camera: 'تصویربرداری', Editing: 'تدوین',
+      notOnSite: 'در ۳۰نما در دسترس نیست', born: 'زاده', died: 'درگذشته', titles: 'عنوان', filmography: 'آثار', readMore: 'OK برای خواندن', scrollHint: '▲ ▼ پیمایش'
     }
   };
   N.lang = N.store.get('lang', 'en');

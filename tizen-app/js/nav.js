@@ -113,6 +113,25 @@
 
   function isInput() { var a = document.activeElement; return a && a.tagName === 'INPUT'; }
 
+  // OK held on an element with onlong(): onlong runs after LONGMS instead of the click; a short press clicks on release.
+  // Every OK keydown until the keyup is auto-repeat and swallowed (never by timing: a busy main thread delays repeats,
+  // and one landing on the Delete that onlong just focused would press it). A lost keyup costs one press at most.
+  var LONGMS = 600, okHold = null;
+  function holdStart(t) {
+    okHold = { el: t, fired: false, timer: setTimeout(function () {
+      if (!okHold || okHold.el !== t) return;
+      okHold.fired = true;
+      if (nav.cur === t && visible(t) && !t.disabled && !nav.locked) t.onlong();
+    }, LONGMS) };
+  }
+  function holdEnd() { var h = okHold; okHold = null; if (h) clearTimeout(h.timer); return h; }
+  document.addEventListener('keyup', function (e) {
+    if (e.keyCode !== K.ENTER || !okHold) return;
+    var h = holdEnd();
+    if (!h.fired && nav.cur === h.el && visible(h.el) && !h.el.disabled && !nav.locked) { if (h.el.onenter) h.el.onenter(); else h.el.click(); }
+  });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) holdEnd(); });
+
   // key-repeat detection: halves move durations and defers heavy swaps (stage / billboard)
   var lastKey = 0, fastT = null, fast = false;
   nav.settleFns = [];
@@ -150,8 +169,10 @@
     else if (k === K.DOWN) { e.preventDefault(); nav.move('down'); }
     else if (k === K.ENTER) {
       e.preventDefault();
+      if (okHold) return;
       // never activate a stale (detached/hidden) element: refocus a live one instead
       if (nav.cur && (!root().contains(nav.cur) || !visible(nav.cur) || nav.cur.disabled)) { nav.clear(); nav.focusFirst(); return; }
+      if (nav.cur && nav.cur.onlong) { holdStart(nav.cur); return; }
       if (nav.cur) { if (nav.cur.onenter) nav.cur.onenter(); else nav.cur.click(); }
     }
     else if (k === K.TAB) { e.preventDefault(); } // native Tab must not scroll the fixed TV canvas
@@ -160,5 +181,9 @@
   document.addEventListener('mousemove', function (e) {
     if (!e.movementX && !e.movementY) return;
     var t = e.target; while (t && t !== document.body) { if (t.classList && t.classList.contains('f')) { if (t !== nav.cur) nav.focus(t); return; } t = t.parentNode; }
+  });
+  // right click stands in for a long OK press
+  document.addEventListener('contextmenu', function (e) {
+    var t = e.target; while (t && t !== document.body) { if (t.onlong && t.classList && t.classList.contains('f')) { e.preventDefault(); nav.focus(t, true); t.onlong(); return; } t = t.parentNode; }
   });
 })();

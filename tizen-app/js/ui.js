@@ -206,21 +206,33 @@
     if (N.lang === 'fa') return (h ? h + ' ساعت ' : '') + (m ? m + ' دقیقه' : '');
     return (h ? h + 'h ' : '') + (m ? m + 'm' : '');
   };
-  // Meta line: [IMDb 7.8] ([RT 86%] [Metacritic 74] if allScores) 30nama-score · year · duration · [age] · genres
-  ui.meta = function (post, nGenres, allScores) {
-    var m = el('div', 'meta'), pi = post.info || {}, sc = post.score || {}, bits = 0;
-    function dot() { if (m.lastChild) m.appendChild(el('i', 'dot-s')); }
-    if (sc.imdb && sc.imdb.score) { m.appendChild(el('span', 'imdb tab', 'IMDb ' + sc.imdb.score)); }
-    if (allScores && sc.rottentomatoes && sc.rottentomatoes.score) {
-      var rt = el('span', 'crit rt tab'); rt.appendChild(ui.icon('tomato')); rt.appendChild(document.createTextNode(sc.rottentomatoes.score + '%')); m.appendChild(rt);
+  // Score group; RT is "rotten" (splat) below 60%.
+  ui.scores = function (sc) {
+    var g = el('span', 'scores');
+    if (sc.imdb && sc.imdb.score) {
+      var im = el('span', 'imdb tab'); im.appendChild(ui.icon('imdb')); im.appendChild(document.createTextNode(sc.imdb.score)); g.appendChild(im);
     }
-    if (allScores && sc.metacritic && sc.metacritic.score) { m.appendChild(el('span', 'crit tab', 'Metacritic ' + sc.metacritic.score)); }
-    if (sc['30nama'] && sc['30nama'].score) { var s3 = el('span', 'sc tab', String(sc['30nama'].score)); m.appendChild(s3); }
+    var rv = sc.rottentomatoes ? parseInt(sc.rottentomatoes.score, 10) : NaN;
+    if (rv > 0) {
+      var rt = el('span', 'crit rt tab'); rt.appendChild(ui.icon(rv >= 60 ? 'tomato' : 'splat')); rt.appendChild(document.createTextNode(rv + '%')); g.appendChild(rt);
+    }
+    var mv = sc.metacritic ? parseInt(sc.metacritic.score, 10) : NaN;
+    if (mv > 0) {
+      var mc = el('span', 'crit mc tab'); mc.appendChild(el('b', 'lbl', 'Metacritic'));
+      mc.appendChild(document.createTextNode(String(mv))); g.appendChild(mc);
+    }
+    return g;
+  };
+  // Meta line, shared by the Home billboard and Details: [IMDb 7.8 · RT 86% · Metacritic 74] · year · duration · [age] · genres
+  ui.meta = function (post) {
+    var m = el('div', 'meta'), pi = post.info || {}, bits = 0;
+    function dot() { if (m.lastChild) m.appendChild(el('i', 'dot-s')); }
+    var g = ui.scores(post.score || {}); if (g.firstChild) m.appendChild(g);
     if (pi.year) { dot(); m.appendChild(el('span', 'tab', pi.year + (pi.year_end && pi.year_end !== pi.year && (post.options || {}).is_series ? '–' + pi.year_end : ''))); }
     var d = ui.duration(pi.time && pi.time.default); if (d) { dot(); m.appendChild(el('span', 'tab', d)); }
     if (pi.age) { dot(); m.appendChild(el('span', 'age', pi.age)); }
     if (post.genre && post.genre.length) {
-      dot(); m.appendChild(el('span', '', post.genre.slice(0, nGenres || 2).map(function (g) { return g.name; }).join(', ')));
+      dot(); m.appendChild(el('span', '', post.genre.slice(0, 3).map(function (g) { return g.name; }).join(', ')));
     }
     return m;
   };

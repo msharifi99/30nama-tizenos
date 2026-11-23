@@ -76,6 +76,7 @@
     if (/^\/movie\/now_playing/.test(path)) return 'now_playing';
     if ((m = /^\/search\/(movie|tv)/.exec(path))) return 'search_' + m[1];
     if (/^\/find\//.test(path)) return 'find';
+    if (/^\/person\/\d+/.test(path)) return 'person';
     if (/^\/(movie|tv)\/\d+\/images/.test(path)) return 'images';
     if (/^\/tv\/\d+\/season\//.test(path)) return 'empty';
     if ((m = /^\/(movie|tv)\/\d+/.exec(path))) return 'details_' + m[1];
@@ -102,9 +103,9 @@
     }), 12000);
   };
   var inflight = {};
-  // o: {ttl, slim(json)} ; the slimmed value is what is cached and returned
+  // o: {ttl, slim(json), ver} ; the slimmed value is what is cached and returned
   T.get = function (path, params, o) {
-    o = o || {}; var key = path + '?' + qs(params);
+    o = o || {}; var key = path + '?' + qs(params) + (o.ver ? '#v' + o.ver : '');
     var c = cget(key, o.ttl || TTL.details);
     if (c) return Promise.resolve(c.v);
     if (inflight[key]) return inflight[key];
@@ -210,14 +211,17 @@
       imdb: (j.external_ids && j.external_ids.imdb_id) || j.imdb_id || '',
       seasons: j.number_of_seasons || 0, cast: [], crew: [], reviews: [], recs: [], nets: [], next: null
     };
-    (cr.cast || []).slice(0, 16).forEach(function (c) { d.cast.push({ n: c.name, c: c.character || '', p: c.profile_path || '' }); });
+    (cr.cast || []).slice(0, 16).forEach(function (c) { d.cast.push({ id: c.id, n: c.name, c: c.character || '', p: c.profile_path || '', d: c.known_for_department || 'Acting' }); });
     var seen = {};
-    function addCrew(n, job, p) { if (!n || seen[n + job] || d.crew.length >= 8) return; seen[n + job] = 1; d.crew.push({ n: n, j: job, p: p || '' }); }
-    (j.created_by || []).forEach(function (c) { addCrew(c.name, 'Creator', c.profile_path); });
-    (cr.crew || []).forEach(function (c) { if (c.job === 'Director') addCrew(c.name, 'Director', c.profile_path); });
-    var w = 0; (cr.crew || []).forEach(function (c) { if (w < 2 && /^(Screenplay|Writer|Story)$/.test(c.job)) { w++; addCrew(c.name, 'Writer', c.profile_path); } });
-    var ep = 0; (cr.crew || []).forEach(function (c) { if (kind === 'tv' && ep < 2 && c.job === 'Executive Producer') { ep++; addCrew(c.name, 'Executive Producer', c.profile_path); } });
-    (cr.crew || []).forEach(function (c) { if (kind === 'movie' && c.job === 'Original Music Composer') addCrew(c.name, 'Composer', c.profile_path); });
+    function addCrew(c, job, dept) {
+      if (!c || !c.name || seen[c.name + job] || d.crew.length >= 8) return;
+      seen[c.name + job] = 1; d.crew.push({ id: c.id, n: c.name, j: job, p: c.profile_path || '', d: dept || c.known_for_department || '' });
+    }
+    (j.created_by || []).forEach(function (c) { addCrew(c, 'Creator', 'Creator'); });
+    (cr.crew || []).forEach(function (c) { if (c.job === 'Director') addCrew(c, 'Director'); });
+    var w = 0; (cr.crew || []).forEach(function (c) { if (w < 2 && /^(Screenplay|Writer|Story)$/.test(c.job)) { w++; addCrew(c, 'Writer'); } });
+    var ep = 0; (cr.crew || []).forEach(function (c) { if (kind === 'tv' && ep < 2 && c.job === 'Executive Producer') { ep++; addCrew(c, 'Executive Producer'); } });
+    (cr.crew || []).forEach(function (c) { if (kind === 'movie' && c.job === 'Original Music Composer') addCrew(c, 'Composer'); });
     var nets = kind === 'tv' ? (j.networks || []) : (j.production_companies || []);
     var ns = {}; nets.forEach(function (n) { if (n.name && !ns[n.name] && d.nets.length < 2) { ns[n.name] = 1; d.nets.push(n.name); } });
     ((j.reviews && j.reviews.results) || []).slice(0, 8).forEach(function (r) {
@@ -235,12 +239,53 @@
     return T.match(post).then(function (m) {
       if (!m) return null;
       var base = T.get('/' + m.kind + '/' + m.id, { language: 'en-US', append_to_response: 'credits,reviews,videos,images,recommendations,external_ids', include_image_language: 'en,null' },
-        { ttl: TTL.details, slim: function (j) { return slimDetails(j, m.kind); } });
+        { ttl: TTL.details, ver: 2, slim: function (j) { return slimDetails(j, m.kind); } });
       var loc = N.lang === 'fa' ? T.get('/' + m.kind + '/' + m.id, { language: 'fa-IR' }, { ttl: TTL.details, slim: function (j) { return { tagline: j.tagline || '', overview: j.overview || '' }; } }).catch(function () { return null; }) : Promise.resolve(null);
       return Promise.all([base, loc]).then(function (r) {
         var d = r[0]; if (!r[1]) return d;
         d = Object.assign({}, d); if (r[1].tagline) d.tagline = r[1].tagline; if (r[1].overview) d.overview = r[1].overview; return d;
       });
+    });
+  };
+  function personItems(j, dept) {
+    var cc = j.combined_credits || {}, crew = cc.crew || [], acting = !dept || dept === 'Acting';
+    var src = acting ? (cc.cast || []) : crew.filter(function (x) {
+      if (dept === 'Creator') return x.department === 'Writing' || x.department === 'Production';
+      return x.department === dept;
+    });
+    var seen = {}, badGenre = { 10767: 1, 10763: 1, 10764: 1 }, out = [];
+    src.forEach(function (x) {
+      var kind = x.media_type || (x.first_air_date !== undefined ? 'tv' : 'movie');
+      if (!x.id || !x.poster_path || (kind !== 'movie' && kind !== 'tv')) return;
+      if (acting && /^(self|himself|herself)$/i.test(String(x.character || '').replace(/^\s+|\s+$/g, ''))) return;
+      if ((x.genre_ids || []).some(function (g) { return badGenre[g]; })) return;
+      var key = kind + x.id; if (seen[key]) return; seen[key] = 1;
+      var it = slimItem(x, kind); it.role = acting ? (x.character || '') : (x.job || '');
+      it.date = x.release_date || x.first_air_date || ''; out.push(it);
+    });
+    out.sort(function (a, b) { return (b.vc - a.vc) || (b.pop - a.pop); });
+    out = out.slice(0, 60);
+    out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)) || (b.vc - a.vc); });
+    return out.slice(0, 42);
+  }
+  function slimPerson(j, dept) {
+    var items = personItems(j, dept);
+    var bdTop = items.slice().sort(function (a, b) { return (b.vc - a.vc) || (b.pop - a.pop); }).filter(function (x) { return x.bd; })[0];
+    return {
+      id: j.id, name: j.name || '', dept: j.known_for_department || '', born: j.birthday || '', died: j.deathday || '',
+      place: j.place_of_birth || '', bio: j.biography || '', photo: j.profile_path || '',
+      bd: (bdTop && bdTop.bd) || '', items: items
+    };
+  }
+  // Person profile and the most notable filmography entries. Crew results are restricted to the department of the selected credit.
+  T.person = function (id, dept) {
+    if (!T.enabled() || !id) return Promise.reject(new Error('tmdb unavailable'));
+    var params = { language: 'en-US', append_to_response: 'combined_credits' };
+    var base = T.get('/person/' + id, params, { ttl: TTL.details, ver: 2, slim: function (j) { return slimPerson(j, dept); } });
+    var loc = N.lang === 'fa' ? T.get('/person/' + id, { language: 'fa-IR' }, { ttl: TTL.details, ver: 2, slim: function (j) { return j.biography || ''; } }).catch(function () { return ''; }) : Promise.resolve('');
+    return Promise.all([base, loc]).then(function (r) {
+      if (!r[1]) return r[0];
+      var p = Object.assign({}, r[0]); p.bio = r[1]; return p;
     });
   };
   // title-logo URL for {id, kind}; '' when none
